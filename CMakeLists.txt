@@ -1,5 +1,5 @@
 cmake_minimum_required (VERSION 2.8)
-project(bundlescan)
+project(velo)
 
 find_package(PCL 1.8 REQUIRED)
 find_package(OpenCV 3.0 REQUIRED)

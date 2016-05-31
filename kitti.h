@@ -12,9 +12,8 @@ int num_cams = 2,
     proj_dist_thresh = 10,
     bundle_length = 5;
 
-const double PI = 3.1415926535897932384626433832795028,
-      match_thresh = 100, // maximum threshold for matching BRISK features
-      focal_length = 7.18856e2,
+const double PI = 3.1415926535897932384626433832795028;
+double focal_length = 7.18856e2,
       cx = 6.071928e2,
       cy = 1.852157e2;
 
@@ -26,16 +25,16 @@ std::vector<double> times;
 
 const std::string kittipath = "/mnt/data/kitti/dataset/sequences/";
 
-static void loadCalibration(
-        std::string dataset;
+void loadCalibration(
+        std::string dataset
         ) {
     std::string calib_path = kittipath + dataset + "/calib.txt";
     std::ifstream calib_stream(calib_path);
-    string P;
+    std::string P;
     velo_to_cam = Eigen::Matrix4d::Identity();
     calib_stream >> P;
-    for(int i=0; i<4; i++) {
-        for(int j=0; j<3; j++) {
+    for(int i=0; i<3; i++) {
+        for(int j=0; j<4; j++) {
             calib_stream >> velo_to_cam(i,j);
         }
     }
@@ -46,8 +45,8 @@ static void loadCalibration(
     cam_to_velo = velo_to_cam.inverse();
 }
 
-static void loadTimes(
-        std::string dataset;
+void loadTimes(
+        std::string dataset
         ) {
     std::string time_path = kittipath + dataset + "/times.txt";
     std::ifstream time_stream(time_path);
@@ -57,10 +56,14 @@ static void loadTimes(
     }
 }
 
-static void loadKittiPoints(
+void loadPoints(
         pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, 
+        std::string dataset,
         int n
         ) {
+    std::stringstream ss;
+    ss << kittipath << dataset << "/velodyne/" 
+        << std::setfill('0') << std::setw(6) << n << ".bin";
     // allocate 40 MB buffer (only ~1300*4*4 KB are needed)
     int32_t num = 10000000;
     float *data = (float*)malloc(num*sizeof(float));
@@ -73,7 +76,7 @@ static void loadKittiPoints(
 
     // load point cloud
     FILE *stream;
-    stream = fopen (currFilenameBinary.c_str(),"rb");
+    stream = fopen (ss.str().c_str(),"rb");
     num = fread(data,sizeof(float),num,stream)/4;
     for (int32_t i=0; i<num; i++) {
         point_cloud->points.push_back(pcl::PointXYZ(*px,*py,*pz));
@@ -83,7 +86,18 @@ static void loadKittiPoints(
     free(data);
 }
 
-static void output_line(Eigen::Matrix4d T, std::ofstream &output) {
+cv::Mat loadImage(
+        std::string dataset,
+        int n
+        ) {
+    std::stringstream ss;
+    ss << kittipath << dataset << "/image_0/" 
+        << std::setfill('0') << std::setw(6) << n << ".png";
+    return cv::imread(ss.str(), 0);
+}
+        
+
+void output_line(Eigen::Matrix4d T, std::ofstream &output) {
     Eigen::Matrix4d result = velo_to_cam * T * cam_to_velo;
     output<< result(0,0) << " "
         << result(0,1) << " "
