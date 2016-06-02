@@ -1,6 +1,6 @@
 #pragma once
 
-int num_cams = 2,
+int num_cams = 1,
     corner_count = 200, // number of features per cell
     row_cells = 6, 
     col_cells = 18,
@@ -84,6 +84,28 @@ void loadPoints(
     }
     fclose(stream);
     free(data);
+}
+
+void segmentPoints(
+        pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
+        std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> &scans
+        ) {
+    double prev_azimuth = -1;
+    int scan_id = 0;
+    for(int i=0, _i = point_cloud->size(); i<_i; i++) {
+        pcl::PointXYZ p = point_cloud->at(i);
+        double azimuth = std::atan2(p.y, p.x);
+        if(azimuth < 0) azimuth += 2*PI;
+        if(i > 0 && std::abs(azimuth - prev_azimuth) > 4) {
+            scan_id++;
+        }
+        if(scan_id >= scans.size()) {
+            scans.push_back(pcl::PointCloud<pcl::PointXYZ>::Ptr(
+                        new pcl::PointCloud<pcl::PointXYZ>));
+        }
+        scans[scan_id]->push_back(p);
+        prev_azimuth = azimuth;
+    }
 }
 
 cv::Mat loadImage(
