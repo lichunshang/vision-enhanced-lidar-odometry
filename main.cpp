@@ -41,6 +41,10 @@ int main(int argc, char** argv) {
     loadCalibration(dataset);
     loadTimes(dataset);
 
+    for(int i=0; i<num_cams; i++) {
+        std::cerr << cam_mat[i] << std::endl;
+    }
+
     std::cerr << velo_to_cam << std::endl;
 
     std::cerr << times.size() << std::endl;
@@ -55,8 +59,8 @@ int main(int argc, char** argv) {
     cvNamedWindow(video);
 
     for(int frame = 0, _frame = times.size(); frame < _frame; frame++) {
-        std::cerr << "Frame: " << frame << std::endl;
-        cv::Mat img = loadImage(dataset, frame);
+        //std::cerr << "Frame: " << frame << std::endl;
+        cv::Mat img = loadImage(dataset, 0, frame);
 
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(
                 new pcl::PointCloud<pcl::PointXYZ>);
@@ -64,6 +68,9 @@ int main(int argc, char** argv) {
 
         std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans;
         segmentPoints(cloud, scans);
+        if(scans.size() != 64) {
+            std::cerr << "Scan " << frame << " has " << scans.size() << std::endl;
+        }
 
         detectFeatures(keypoints,
                 descriptors,
@@ -72,8 +79,22 @@ int main(int argc, char** argv) {
                 img,
                 frame);
 
+        std::vector<std::vector<cv::Point2d>> projection;
+        projectLidarToCamera(scans, projection, 0);
+
         cv::Mat draw;
-        cv::drawKeypoints(img, keypoints[frame], draw);
+        cvtColor(img, draw, cv::COLOR_GRAY2BGR);
+        //cv::drawKeypoints(img, keypoints[frame], draw);
+        for(auto p : keypoints[frame]) {
+            cv::circle(draw, p.pt, 2, cv::Scalar(0, 0, 255), -1, 8, 0);
+        }
+        for(int s=0, _s = projection.size(); s<_s; s++) {
+            auto P = projection[s];
+            for(auto p : P) {
+                cv::circle(draw, p, 2, 
+                        cv::Scalar(255 * (s%2), 255 * ((s+1)%2), 0), -1, 8, 0);
+            }
+        }
         cv::imshow(video, draw);
         cvWaitKey(1);
     }

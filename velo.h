@@ -35,6 +35,20 @@ void detectFeatures(
 }
 
 void projectLidarToCamera(
-        std::vector<pcl::PointCloud<pcl::PointXYZ::Ptr> scans,
-        std::vector<cv::Point> projection
-        );
+        const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> &scans,
+        std::vector<std::vector<cv::Point2d>> &projection,
+        const int which_cam
+        ) {
+    for(int s=0; s<scans.size(); s++) {
+        projection.push_back(std::vector<cv::Point2d>());
+        for(int i=0, _i = scans[s]->size(); i<_i; i++) {
+            Eigen::Vector4d P = scans[s]->at(i).getVector4fMap().cast<double>();
+            Eigen::Vector3d p = cam_mat[which_cam] * P;
+            cv::Point2d c(p(0)/p(2), p(1)/p(2));
+            if(p(2) > 0 && c.x >= 0 && c.x < img_width
+                    && c.y >= 0 && c.y < img_height) {
+                projection[s].push_back(c);
+            }
+        }
+    }
+}

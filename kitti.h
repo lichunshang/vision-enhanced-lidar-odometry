@@ -1,22 +1,22 @@
 #pragma once
 
-int num_cams = 1,
-    corner_count = 200, // number of features per cell
-    row_cells = 6, 
-    col_cells = 18,
-    img_width = 1226, // kitti data
-    img_height = 370,
-    cell_width = img_width / col_cells,
-    cell_height = img_height / row_cells,
+const int num_cams = 4,
+    corner_count = 5, // number of features per cell
+    row_cells = 10, 
+    col_cells = 30,
     dist_thresh = 60, // square of min distance between new detected features and existing features
     proj_dist_thresh = 10,
     bundle_length = 5;
 
-const double PI = 3.1415926535897932384626433832795028;
-double focal_length = 7.18856e2,
-      cx = 6.071928e2,
-      cy = 1.852157e2;
+int img_width = 1226, // kitti data
+    img_height = 370,
+    cell_width = img_width / col_cells,
+    cell_height = img_height / row_cells;
 
+const double PI = 3.1415926535897932384626433832795028;
+
+std::vector<Eigen::Matrix<double, 3, 4>, 
+    Eigen::aligned_allocator<Eigen::Matrix<double, 3, 4>>> cam_mat(num_cams);
 Eigen::Matrix4d velo_to_cam, cam_to_velo;
 
 std::ofstream output;
@@ -26,27 +26,33 @@ std::vector<double> times;
 const std::string kittipath = "/mnt/data/kitti/dataset/sequences/";
 
 void loadCalibration(
-        std::string dataset
+        const std::string & dataset
         ) {
     std::string calib_path = kittipath + dataset + "/calib.txt";
     std::ifstream calib_stream(calib_path);
     std::string P;
     velo_to_cam = Eigen::Matrix4d::Identity();
+    for(int cam=0; cam<num_cams; cam++) {
+        calib_stream >> P;
+        cam_mat.push_back(Eigen::Matrix<double, 3, 4>());
+        for(int i=0; i<3; i++) {
+            for(int j=0; j<4; j++) {
+                calib_stream >> cam_mat[cam](i,j);
+            }
+        }
+    }
     calib_stream >> P;
     for(int i=0; i<3; i++) {
         for(int j=0; j<4; j++) {
             calib_stream >> velo_to_cam(i,j);
         }
     }
-    focal_length = velo_to_cam(0,0);
-    cx = velo_to_cam(0,2);
-    cy = velo_to_cam(1,2);
 
     cam_to_velo = velo_to_cam.inverse();
 }
 
 void loadTimes(
-        std::string dataset
+        const std::string & dataset
         ) {
     std::string time_path = kittipath + dataset + "/times.txt";
     std::ifstream time_stream(time_path);
@@ -78,10 +84,13 @@ void loadPoints(
     FILE *stream;
     stream = fopen (ss.str().c_str(),"rb");
     num = fread(data,sizeof(float),num,stream)/4;
+
+
     for (int32_t i=0; i<num; i++) {
         point_cloud->points.push_back(pcl::PointXYZ(*px,*py,*pz));
         px+=4; py+=4; pz+=4; pr+=4;
     }
+
     fclose(stream);
     free(data);
 }
@@ -90,30 +99,42 @@ void segmentPoints(
         pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
         std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> &scans
         ) {
-    double prev_azimuth = -1;
+    double prev_y = 0;
     int scan_id = 0;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_tmp(
+            new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::transformPointCloud(*point_cloud, *cloud_tmp, velo_to_cam);
+    std::vector<std::vector<int>> scan_ids;
     for(int i=0, _i = point_cloud->size(); i<_i; i++) {
         pcl::PointXYZ p = point_cloud->at(i);
-        double azimuth = std::atan2(p.y, p.x);
-        if(azimuth < 0) azimuth += 2*PI;
-        if(i > 0 && std::abs(azimuth - prev_azimuth) > 4) {
+        if(i > 0 && p.x > 0 && (p.y > 0) != (prev_y > 0)) {
             scan_id++;
         }
         if(scan_id >= scans.size()) {
+            scan_ids.push_back(std::vector<int>());
             scans.push_back(pcl::PointCloud<pcl::PointXYZ>::Ptr(
                         new pcl::PointCloud<pcl::PointXYZ>));
         }
-        scans[scan_id]->push_back(p);
-        prev_azimuth = azimuth;
+        scan_ids[scan_id].push_back(i);
+        prev_y = p.y;
     }
+    // for some reason, kitti scans are sorted in a strange way
+    for(int s=0; s<scan_ids.size(); s++) {
+        for(int i = 0, _i = scan_ids[s].size(); i<_i; i++) {
+            pcl::PointXYZ q = cloud_tmp->at(scan_ids[s][(i + _i/2) % _i]);
+            scans[s]->push_back(q);
+        }
+    }
+    cloud_tmp.reset();
 }
 
 cv::Mat loadImage(
-        std::string dataset,
-        int n
+        const std::string & dataset,
+        const int cam,
+        const int n
         ) {
     std::stringstream ss;
-    ss << kittipath << dataset << "/image_0/" 
+    ss << kittipath << dataset << "/image_" << cam << "/" 
         << std::setfill('0') << std::setw(6) << n << ".png";
     return cv::imread(ss.str(), 0);
 }
