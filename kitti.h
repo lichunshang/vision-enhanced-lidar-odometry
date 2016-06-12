@@ -15,9 +15,9 @@ int img_width = 1226, // kitti data
 
 const double PI = 3.1415926535897932384626433832795028;
 
-std::vector<Eigen::Matrix<double, 3, 4>, 
-    Eigen::aligned_allocator<Eigen::Matrix<double, 3, 4>>> cam_mat(num_cams);
-Eigen::Matrix4d velo_to_cam, cam_to_velo;
+std::vector<Eigen::Matrix<float, 3, 4>, 
+    Eigen::aligned_allocator<Eigen::Matrix<float, 3, 4>>> cam_mat(num_cams);
+Eigen::Matrix4f velo_to_cam, cam_to_velo;
 
 std::ofstream output;
 
@@ -31,10 +31,10 @@ void loadCalibration(
     std::string calib_path = kittipath + dataset + "/calib.txt";
     std::ifstream calib_stream(calib_path);
     std::string P;
-    velo_to_cam = Eigen::Matrix4d::Identity();
+    velo_to_cam = Eigen::Matrix4f::Identity();
     for(int cam=0; cam<num_cams; cam++) {
         calib_stream >> P;
-        cam_mat.push_back(Eigen::Matrix<double, 3, 4>());
+        cam_mat.push_back(Eigen::Matrix<float, 3, 4>());
         for(int i=0; i<3; i++) {
             for(int j=0; j<4; j++) {
                 calib_stream >> cam_mat[cam](i,j);
@@ -99,7 +99,7 @@ void segmentPoints(
         pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
         std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> &scans
         ) {
-    double prev_y = 0;
+    float prev_y = 0;
     int scan_id = 0;
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_tmp(
             new pcl::PointCloud<pcl::PointXYZ>);
@@ -121,7 +121,7 @@ void segmentPoints(
     // for some reason, kitti scans are sorted in a strange way
     for(int s=0; s<scan_ids.size(); s++) {
         for(int i = 0, _i = scan_ids[s].size(); i<_i; i++) {
-            pcl::PointXYZ q = cloud_tmp->at(scan_ids[s][(i + _i/2) % _i]);
+            pcl::PointXYZ q = cloud_tmp->at(scan_ids[s][_i - 1 - (i + _i/2) % _i]);
             scans[s]->push_back(q);
         }
     }
@@ -140,8 +140,8 @@ cv::Mat loadImage(
 }
         
 
-void output_line(Eigen::Matrix4d T, std::ofstream &output) {
-    Eigen::Matrix4d result = velo_to_cam * T * cam_to_velo;
+void output_line(Eigen::Matrix4f T, std::ofstream &output) {
+    Eigen::Matrix4f result = velo_to_cam * T * cam_to_velo;
     output<< result(0,0) << " "
         << result(0,1) << " "
         << result(0,2) << " "

@@ -29,6 +29,7 @@
 #include <glog/logging.h>
 #include <gflags/gflags.h>
 
+#include "utility.h"
 #include "kitti.h"
 #include "velo.h"
 
@@ -49,18 +50,21 @@ int main(int argc, char** argv) {
 
     std::cerr << times.size() << std::endl;
 
+    int num_frames = times.size();
+
     cv::Ptr<cv::xfeatures2d::FREAK> freak = cv::xfeatures2d::FREAK::create();
     cv::Ptr<cv::GFTTDetector> gftt = cv::GFTTDetector::create(corner_count, 0.01, 3);
 
-    std::vector<std::vector<cv::KeyPoint>> keypoints;
-    std::vector<cv::Mat> descriptors;
+    std::vector<std::vector<std::vector<cv::KeyPoint>>> keypoints(num_cams,
+            std::vector<std::vector<cv::KeyPoint>>(num_frames));
+    std::vector<std::vector<cv::Mat>> descriptors(num_cams,
+            std::vector<cv::Mat>(num_frames));
 
     char video[] = "video";
     cvNamedWindow(video);
 
-    for(int frame = 0, _frame = times.size(); frame < _frame; frame++) {
+    for(int frame = 0; frame < num_frames; frame++) {
         //std::cerr << "Frame: " << frame << std::endl;
-        cv::Mat img = loadImage(dataset, 0, frame);
 
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(
                 new pcl::PointCloud<pcl::PointXYZ>);
@@ -71,32 +75,64 @@ int main(int argc, char** argv) {
         if(scans.size() != 64) {
             std::cerr << "Scan " << frame << " has " << scans.size() << std::endl;
         }
+        for(int cam = 0; cam<num_cams; cam++) {
+            cv::Mat img = loadImage(dataset, cam, frame);
 
-        detectFeatures(keypoints,
-                descriptors,
-                gftt,
-                freak,
-                img,
-                frame);
+            auto a = clock()/double(CLOCKS_PER_SEC);
+            detectFeatures(keypoints[cam][frame],
+                    descriptors[cam][frame],
+                    gftt,
+                    freak,
+                    img);
 
-        std::vector<std::vector<cv::Point2d>> projection;
-        projectLidarToCamera(scans, projection, 0);
+            auto b = clock()/double(CLOCKS_PER_SEC);
+            std::vector<std::vector<cv::Point2f>> projection;
+            std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans_valid;
+            projectLidarToCamera(scans, projection, scans_valid, cam);
 
-        cv::Mat draw;
-        cvtColor(img, draw, cv::COLOR_GRAY2BGR);
-        //cv::drawKeypoints(img, keypoints[frame], draw);
-        for(auto p : keypoints[frame]) {
-            cv::circle(draw, p.pt, 2, cv::Scalar(0, 0, 255), -1, 8, 0);
-        }
-        for(int s=0, _s = projection.size(); s<_s; s++) {
-            auto P = projection[s];
-            for(auto p : P) {
-                cv::circle(draw, p, 2, 
-                        cv::Scalar(255 * (s%2), 255 * ((s+1)%2), 0), -1, 8, 0);
+            auto c = clock()/double(CLOCKS_PER_SEC);
+            pcl::PointCloud<pcl::PointXYZ>::Ptr kp_with_depth(
+                    new pcl::PointCloud<pcl::PointXYZ>);
+            std::vector<bool> has_depth = 
+                featureDepthAssociation(scans_valid,
+                    projection,
+                    keypoints[cam][frame],
+                    kp_with_depth);
+            auto d = clock()/double(CLOCKS_PER_SEC);
+            std::cerr << "clock: " << a << " " << b << " " << c << " " << d << std::endl;
+            if(cam == 3) {
+                cv::Mat draw;
+                cvtColor(img, draw, cv::COLOR_GRAY2BGR);
+                //cv::drawKeypoints(img, keypoints[frame], draw);
+                for(int k=0; k<keypoints[cam][frame].size(); k++) {
+                    auto p = keypoints[cam][frame][k];
+                    if(has_depth[k]) {
+                        cv::circle(draw, p.pt, 3, cv::Scalar(0, 0, 255), -1, 8, 0);
+                    } else {
+                        cv::circle(draw, p.pt, 3, cv::Scalar(255, 200, 0), -1, 8, 0);
+                    }
+                }
+                for(int s=0, _s = projection.size(); s<_s; s++) {
+                    auto P = projection[s];
+                    /*
+                    if(P.size()) {
+                        std::cerr << s << ": " 
+                            << P[0] << " " 
+                            << P[P.size()-1] << " " 
+                            << P.size() << std::endl;
+                    }
+                    */
+                    for(auto p : P) {
+                        cv::circle(draw, p, 1, 
+                                cv::Scalar(0, 128, 0), -1, 8, 0);
+                    }
+                }
+                cv::imshow(video, draw);
+                cvWaitKey(1);
+                cvWaitKey();
             }
         }
-        cv::imshow(video, draw);
-        cvWaitKey(1);
+
     }
     cvWaitKey();
     return 0;
