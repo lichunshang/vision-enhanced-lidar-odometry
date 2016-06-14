@@ -113,7 +113,7 @@ std::vector<bool> featureDepthAssociation(
                                                    kp
                                                    |
                                                    |
-                              s, mid ---------- interp1 ----------s, mid+1
+                              s, mid ---------- interp1 --------- s, mid+1
                          */
                         pcl::PointXYZ interp1 = utility::linterpolate(
                                 scans[s]->at(mid),
@@ -176,3 +176,12 @@ std::vector<bool> featureDepthAssociation(
     std::cerr << "Has depth: " << has_depth_n << "/" << keypoints.size() << std::endl;
     return has_depth;
 }
+
+void frameToFrame(
+        cv::Mat &descriptors,
+        const std::vector<cv::KeyPoint> &keypoints,
+        pcl::PointCloud<pcl::PointXYZ>::Ptr keypoints_with_depth,
+        std::vector<bool> has_depth
+        ) {
+}
+

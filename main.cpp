@@ -32,6 +32,7 @@
 #include "utility.h"
 #include "kitti.h"
 #include "velo.h"
+#include "costfunctions.h"
 
 int main(int argc, char** argv) {
     if(argc < 2) {

@@ -1,7 +1,8 @@
 #pragma once
 
-struct costPlane {
-    costPlane(
+struct cost3DPD {
+    // 3D point to plane distance
+    cost3DPD(
             double point_x,
             double point_y,
             double point_z,
@@ -39,10 +40,12 @@ struct costPlane {
     }
     double point_x, point_y, point_z,
            normal_x, normal_y, normal_z,
-           offset_x, offset_y, offset_z;
+           offset_x, offset_y, offset_z,
+           weight;
 };
 
 struct cost3D3D {
+    // 3D point to 3D point distance
     cost3D3D(
             double m_x,
             double m_y,
@@ -66,11 +69,114 @@ struct cost3D3D {
         M_original[1] = T(m_y);
         M_original[2] = T(m_z);
         ceres::AngleAxisRotatePoint(x, M_original, M);
-        residual[0] = M[0] - s_x;
-        residual[1] = M[1] - s_y;
-        residual[2] = M[2] - s_z;
+        residual[0] = weight * (M[0] + x[3] - s_x);
+        residual[1] = weight * (M[1] + x[4] - s_y);
+        residual[2] = weight * (M[2] + x[5] - s_z);
         return true;
     }
     double m_x, m_y, m_z,
-           s_x, s_y, s_z;
+           s_x, s_y, s_z,
+           weight;
+};
+
+struct cost3D2D {
+    // 3D point to 2D point reprojection distance
+    cost3D2D(
+            double m_x,
+            double m_y,
+            double m_z,
+            double s_x,
+            double s_y,
+            double k_00, // K is the 3 by 4 projection matrix
+            double k_01,
+            double k_02,
+            double k_03,
+            double k_10,
+            double k_11,
+            double k_12,
+            double k_13,
+            double k_20,
+            double k_21,
+            double k_22,
+            double k_23,
+            double weight) :
+        m_x(m_x),
+        m_y(m_y),
+        m_z(m_z),
+        s_x(s_x),
+        s_y(s_y),
+        k_00(k_00),
+        k_01(k_01),
+        k_02(k_02),
+        k_03(k_03),
+        k_10(k_10),
+        k_11(k_11),
+        k_12(k_12),
+        k_13(k_13),
+        k_20(k_20),
+        k_21(k_21),
+        k_22(k_22),
+        k_23(k_23),
+        weight(weight) {}
+    template <typename T>
+    bool operator()(const T* x, T* residual) const {
+        T M[3], M_original[3];
+        M_original[0] = T(m_x);
+        M_original[1] = T(m_y);
+        M_original[2] = T(m_z);
+        ceres::AngleAxisRotatePoint(x, M_original, M);
+
+        M[0] -= x[3];
+        M[1] -= x[4];
+        M[2] -= x[5];
+
+        T r_0 = k_00 * M[0] + k_01 * M[1] + k_02 + M[2] + k_03;
+        T r_1 = k_10 * M[0] + k_11 * M[1] + k_12 + M[2] + k_13;
+        T r_2 = k_20 * M[0] + k_21 * M[1] + k_22 + M[2] + k_23;
+        residual[0] = weight * (r_0/r_2 - s_x);
+        residual[1] = weight * (r_1/r_2 - s_y);
+        return true;
+    }
+    double m_x, m_y, m_z,
+           s_x, s_y,
+           k_00, k_01, k_02, k_03,
+           k_10, k_11, k_12, k_13,
+           k_20, k_21, k_22, k_23,
+           weight;
+};
+
+struct cost2D2D {
+    // 2D point to 2D point epipolar constraint
+    cost2D2D(
+            double m_x,
+            double m_y,
+            double s_x,
+            double s_y,
+            double weight) :
+        m_x(m_x),
+        m_y(m_y),
+        s_x(s_x),
+        s_y(s_y),
+        weight(weight) {}
+
+    template <typename T>
+    bool operator()(const T* x, T* residual) const {
+        T M[3], M_original[3];
+        M_original[0] = T(m_x);
+        M_original[1] = T(m_y);
+        M_original[2] = T(1);
+        ceres::AngleAxisRotatePoint(x, M_original, M);
+        // E = [t]_x R
+        // S dot E M = residual
+        // S dot (t cross (R M)) = residual
+        residual[0] = weight * (
+                M[0] * (-s_y * x[5] + x[4]) +
+                M[1] * ( s_x * x[5] - x[3]) + 
+                M[2] * (-s_x * x[4] + s_y * x[3])
+                );
+        return true;
+    }
+    double m_x, m_y, m_z,
+           s_x, s_y, s_z,
+           weight;
 };
