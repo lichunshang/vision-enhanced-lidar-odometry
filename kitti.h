@@ -1,8 +1,8 @@
 #pragma once
 
 const int num_cams = 4,
-    corner_count = 5, // number of features per cell
-    row_cells = 10, 
+    corner_count = 10, // number of features per cell
+    row_cells = 5, 
     col_cells = 30,
     dist_thresh = 60, // square of min distance between new detected features and existing features
     proj_dist_thresh = 10,
@@ -16,7 +16,8 @@ int img_width = 1226, // kitti data
 const double PI = 3.1415926535897932384626433832795028,
     cauchy_thresh_3D2D = 30, // pixels
     cauchy_thresh_3D3D = 0.5, // meters
-    match_thresh = 40;
+    match_thresh = 40, // bits, hamming distance for FREAK features
+    depth_assoc_thresh = 10; // pixels
 
 std::vector<Eigen::Matrix<float, 3, 4>, 
     Eigen::aligned_allocator<Eigen::Matrix<float, 3, 4>>> cam_mat(num_cams);
@@ -139,12 +140,16 @@ cv::Mat loadImage(
     std::stringstream ss;
     ss << kittipath << dataset << "/image_" << cam << "/" 
         << std::setfill('0') << std::setw(6) << n << ".png";
-    return cv::imread(ss.str(), 0);
+    cv::Mat I = cv::imread(ss.str(), 0);
+    img_width = I.cols;
+    img_height = I.rows;
+    cell_width = img_width / col_cells;
+    cell_height = img_height / row_cells;
+    return I;
 }
         
 
-void output_line(Eigen::Matrix4f T, std::ofstream &output) {
-    Eigen::Matrix4f result = velo_to_cam * T * cam_to_velo;
+void output_line(Eigen::Matrix4d result, std::ofstream &output) {
     output<< result(0,0) << " "
         << result(0,1) << " "
         << result(0,2) << " "

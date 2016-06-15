@@ -40,6 +40,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::string dataset = argv[1];
+    std::ofstream output;
+    output.open(("results/" + std::string(argv[1]) + ".txt").c_str());
     loadCalibration(dataset);
     loadTimes(dataset);
 
@@ -47,9 +49,9 @@ int main(int argc, char** argv) {
         std::cerr << cam_mat[i] << std::endl;
     }
 
-    std::cerr << velo_to_cam << std::endl;
+    //std::cerr << velo_to_cam << std::endl;
 
-    std::cerr << times.size() << std::endl;
+    //std::cerr << times.size() << std::endl;
 
     int num_frames = times.size();
 
@@ -69,8 +71,11 @@ int main(int argc, char** argv) {
     char video[] = "video";
     cvNamedWindow(video);
 
+    Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
+
     for(int frame = 0; frame < num_frames; frame++) {
-        //std::cerr << "Frame: " << frame << std::endl;
+        std::cerr << "Frame (" << dataset << "): " 
+            << frame << "/" << num_frames << std::endl;
 
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(
                 new pcl::PointCloud<pcl::PointXYZ>);
@@ -106,7 +111,7 @@ int main(int argc, char** argv) {
                     keypoints[cam][frame],
                     kp_with_depth[cam][frame]);
             auto d = clock()/double(CLOCKS_PER_SEC);
-            std::cerr << "clock: " << a << " " << b << " " << c << " " << d << std::endl;
+            std::cerr << "clock (" << cam << "): " << a << " " << b << " " << c << " " << d << std::endl;
             if(cam == 0) {
                 cv::Mat draw;
                 cvtColor(img, draw, cv::COLOR_GRAY2BGR);
@@ -136,12 +141,12 @@ int main(int argc, char** argv) {
                 }
                 cv::imshow(video, draw);
                 cvWaitKey(1);
-                cvWaitKey();
+                //cvWaitKey();
             }
         }
 
         if(frame > 0) {
-            frameToFrame(
+            pose *= frameToFrame(
                     descriptors,
                     keypoints,
                     kp_with_depth,
@@ -149,6 +154,7 @@ int main(int argc, char** argv) {
                     frame,
                     frame-1);
         }
+        output_line(pose, output);
 
     }
     cvWaitKey();
