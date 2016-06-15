@@ -1,7 +1,7 @@
 #pragma once
 
 struct cost3DPD {
-    // 3D point to plane distance
+    // 3DPD
     cost3DPD(
             double point_x,
             double point_y,
@@ -27,15 +27,15 @@ struct cost3DPD {
     template <typename T>
     bool operator()(const T* x, T* residual) const {
         // x[0], x[1], x[2] are angle-axis rotation
-        T p[3], p_original[3];
-        p_original[0] = T(point_x);
-        p_original[1] = T(point_y);
-        p_original[2] = T(point_z);
-        ceres::AngleAxisRotatePoint(x, p_original, p);
-        p[0] += x[3] - offset_x;
-        p[1] += x[4] - offset_y;
-        p[2] += x[5] - offset_z;
-        residual[0] = p[0] * normal_x + p[1] * normal_y + p[2] * normal_z;
+        T M[3], M_original[3];
+        M_original[0] = T(point_x);
+        M_original[1] = T(point_y);
+        M_original[2] = T(point_z);
+        ceres::AngleAxisRotatePoint(x, M_original, M);
+        M[0] += x[3] - offset_x;
+        M[1] += x[4] - offset_y;
+        M[2] += x[5] - offset_z;
+        residual[0] = M[0] * normal_x + M[1] * normal_y + M[2] * normal_z;
         return true;
     }
     double point_x, point_y, point_z,
@@ -87,36 +87,36 @@ struct cost3D2D {
             double m_z,
             double s_x,
             double s_y,
-            double k_00, // K is the 3 by 4 projection matrix
-            double k_01,
-            double k_02,
-            double k_03,
-            double k_10,
-            double k_11,
-            double k_12,
-            double k_13,
-            double k_20,
-            double k_21,
-            double k_22,
-            double k_23,
+            double P_00, // P is the 3 by 4 projection matrix
+            double P_01,
+            double P_02,
+            double P_03,
+            double P_10,
+            double P_11,
+            double P_12,
+            double P_13,
+            double P_20,
+            double P_21,
+            double P_22,
+            double P_23,
             double weight) :
         m_x(m_x),
         m_y(m_y),
         m_z(m_z),
         s_x(s_x),
         s_y(s_y),
-        k_00(k_00),
-        k_01(k_01),
-        k_02(k_02),
-        k_03(k_03),
-        k_10(k_10),
-        k_11(k_11),
-        k_12(k_12),
-        k_13(k_13),
-        k_20(k_20),
-        k_21(k_21),
-        k_22(k_22),
-        k_23(k_23),
+        P_00(P_00),
+        P_01(P_01),
+        P_02(P_02),
+        P_03(P_03),
+        P_10(P_10),
+        P_11(P_11),
+        P_12(P_12),
+        P_13(P_13),
+        P_20(P_20),
+        P_21(P_21),
+        P_22(P_22),
+        P_23(P_23),
         weight(weight) {}
     template <typename T>
     bool operator()(const T* x, T* residual) const {
@@ -130,18 +130,18 @@ struct cost3D2D {
         M[1] -= x[4];
         M[2] -= x[5];
 
-        T r_0 = k_00 * M[0] + k_01 * M[1] + k_02 + M[2] + k_03;
-        T r_1 = k_10 * M[0] + k_11 * M[1] + k_12 + M[2] + k_13;
-        T r_2 = k_20 * M[0] + k_21 * M[1] + k_22 + M[2] + k_23;
+        T r_0 = P_00 * M[0] + P_01 * M[1] + P_02 + M[2] + P_03;
+        T r_1 = P_10 * M[0] + P_11 * M[1] + P_12 + M[2] + P_13;
+        T r_2 = P_20 * M[0] + P_21 * M[1] + P_22 + M[2] + P_23;
         residual[0] = weight * (r_0/r_2 - s_x);
         residual[1] = weight * (r_1/r_2 - s_y);
         return true;
     }
     double m_x, m_y, m_z,
            s_x, s_y,
-           k_00, k_01, k_02, k_03,
-           k_10, k_11, k_12, k_13,
-           k_20, k_21, k_22, k_23,
+           P_00, P_01, P_02, P_03,
+           P_10, P_11, P_12, P_13,
+           P_20, P_21, P_22, P_23,
            weight;
 };
 

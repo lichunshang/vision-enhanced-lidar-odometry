@@ -75,13 +75,13 @@ void projectLidarToCamera(
     // std::cerr << "bad: " << bad << std::endl;
 }
 
-std::vector<bool> featureDepthAssociation(
+std::vector<int> featureDepthAssociation(
         const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> &scans,
         const std::vector<std::vector<cv::Point2f>> &projection,
         const std::vector<cv::KeyPoint> &keypoints,
         pcl::PointCloud<pcl::PointXYZ>::Ptr keypoints_with_depth
         ) {
-    std::vector<bool> has_depth(keypoints.size(), false);
+    std::vector<int> has_depth(keypoints.size(), -1);
     std::cerr << "Sizes: " <<  scans.size() << " " 
         << projection.size() << std::endl;
     int has_depth_n = 0;
@@ -115,32 +115,32 @@ std::vector<bool> featureDepthAssociation(
                                                    |
                               s, mid ---------- interp1 --------- s, mid+1
                          */
-                        pcl::PointXYZ interp1 = utility::linterpolate(
+                        pcl::PointXYZ interp1 = util::linterpolate(
                                 scans[s]->at(mid),
                                 scans[s]->at(mid+1),
                                 projection[s][mid].x,
                                 projection[s][mid+1].x,
                                 kp.pt.x);
-                        pcl::PointXYZ interp2 = utility::linterpolate(
+                        pcl::PointXYZ interp2 = util::linterpolate(
                                 scans[s-1]->at(last_interp),
                                 scans[s-1]->at(last_interp+1),
                                 projection[s-1][last_interp].x,
                                 projection[s-1][last_interp+1].x,
                                 kp.pt.x);
-                        float i1y = utility::linterpolate(
+                        float i1y = util::linterpolate(
                                 projection[s][mid].y,
                                 projection[s][mid+1].y,
                                 projection[s][mid].x,
                                 projection[s][mid+1].x,
                                 kp.pt.x);
-                        float i2y = utility::linterpolate(
+                        float i2y = util::linterpolate(
                                 projection[s-1][last_interp].y,
                                 projection[s-1][last_interp+1].y,
                                 projection[s-1][last_interp].x,
                                 projection[s-1][last_interp+1].x,
                                 kp.pt.x);
 
-                        pcl::PointXYZ kpwd = utility::linterpolate(
+                        pcl::PointXYZ kpwd = util::linterpolate(
                                 interp1,
                                 interp2,
                                 i1y,
@@ -162,7 +162,7 @@ std::vector<bool> featureDepthAssociation(
                             << " " << kpwd
                             << std::endl;
                             */
-                        has_depth[k] = true;
+                        has_depth[k] = has_depth_n;
                         has_depth_n++;
                     }
                     last_interp = mid;
@@ -170,7 +170,7 @@ std::vector<bool> featureDepthAssociation(
                 }
             }
             if(!found) last_interp = -1;
-            if(has_depth[k]) break;
+            if(has_depth[k] != -1) break;
         }
     }
     std::cerr << "Has depth: " << has_depth_n << "/" << keypoints.size() << std::endl;
@@ -178,10 +178,95 @@ std::vector<bool> featureDepthAssociation(
 }
 
 void frameToFrame(
-        cv::Mat &descriptors,
-        const std::vector<cv::KeyPoint> &keypoints,
-        pcl::PointCloud<pcl::PointXYZ>::Ptr keypoints_with_depth,
-        std::vector<bool> has_depth
+        const std::vector<std::vector<cv::Mat>> &descriptors,
+        const std::vector<std::vector<std::vector<cv::KeyPoint>>> &keypoints,
+        const std::vector<std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>> &keypoints_with_depth,
+        const std::vector<std::vector<std::vector<int>>> has_depth,
+        int frame1,
+        int frame2
         ) {
+    cv::BFMatcher matcher(cv::NORM_HAMMING);
+    std::vector<cv::DMatch> matches;
+
+    ceres::Problem problem;
+    double transform[6] = {0,0,0,0,0,0};
+
+    for(int cam = 0; cam<num_cams; cam++) {
+        matcher.match(descriptors[cam][frame1], descriptors[cam][frame2], matches);
+        // find minimum matching distance and filter out the ones more than twice as big as it
+        double min_dist = 1e9, max_dist = 0;
+        for(int i=0; i<matches.size(); i++) {
+            if(matches[i].distance < min_dist) min_dist = matches[i].distance;
+            if(matches[i].distance > max_dist) max_dist = matches[i].distance;
+        }
+        std::cerr << "Matches cam " << cam << ": " <<  matches.size() 
+            << " " << min_dist << " " << max_dist
+            << std::endl;
+        for(int i=0; i<matches.size(); i++) {
+            if(matches[i].distance > std::max(2*min_dist, match_thresh)) continue;
+            int point1 = matches[i].queryIdx,
+                point2 = matches[i].trainIdx;
+            if(has_depth[cam][frame1][point1] != -1
+                    && has_depth[cam][frame2][point2] != -1) {
+                // 3D 3D
+                std::cerr << "  3D 3D " << point1 << ", " << point2 << std::endl;
+                const pcl::PointXYZ pointM = keypoints_with_depth[cam][frame1]->at(has_depth[cam][frame1][point1]);
+                const pcl::PointXYZ pointS = keypoints_with_depth[cam][frame2]->at(has_depth[cam][frame2][point2]);
+                ceres::CostFunction* cost_function = 
+                    new ceres::AutoDiffCostFunction<cost3D3D,3,6>(
+                            new cost3D3D(
+                                pointM.x,
+                                pointM.y,
+                                pointM.z,
+                                pointS.x,
+                                pointS.y,
+                                pointS.z,
+                                1
+                                )
+                            );
+                problem.AddResidualBlock(cost_function, new ceres::CauchyLoss(cauchy_thresh_3D3D), transform);
+            } else if(has_depth[cam][frame1][point1] != -1
+                    && has_depth[cam][frame2][point2] == -1) {
+                // 3D 2D
+                std::cerr << "  3D 2D " << point1 << ", " << point2 << std::endl;
+                const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame1]->at(has_depth[cam][frame1][point1]);
+                const auto point2D = keypoints[cam][frame2][point2];
+                ceres::CostFunction* cost_function = 
+                    new ceres::AutoDiffCostFunction<cost3D2D,2,6>(
+                            new cost3D2D(
+                                point3D.x,
+                                point3D.y,
+                                point3D.z,
+                                point2D.pt.x,
+                                point2D.pt.y,
+                                cam_mat[cam](0,0),
+                                cam_mat[cam](0,1),
+                                cam_mat[cam](0,2),
+                                cam_mat[cam](0,3),
+                                cam_mat[cam](1,0),
+                                cam_mat[cam](1,1),
+                                cam_mat[cam](1,2),
+                                cam_mat[cam](1,3),
+                                cam_mat[cam](2,0),
+                                cam_mat[cam](2,1),
+                                cam_mat[cam](2,2),
+                                cam_mat[cam](2,3),
+                                0.1
+                                )
+                            );
+                problem.AddResidualBlock(cost_function, new ceres::CauchyLoss(cauchy_thresh_3D2D), transform);
+            }
+        }
+    }
+    ceres::Solver::Options options;
+    options.linear_solver_type = ceres::SPARSE_SCHUR;
+    options.minimizer_progress_to_stdout = true;
+    ceres::Solver::Summary summary;
+    ceres::Solve(options, &problem, &summary);
+
+    for(int i=0; i<6; i++) {
+        std::cerr << transform[i] << " ";
+    }
+    std::cerr << std::endl;
 }
 

@@ -31,8 +31,8 @@
 
 #include "utility.h"
 #include "kitti.h"
-#include "velo.h"
 #include "costfunctions.h"
+#include "velo.h"
 
 int main(int argc, char** argv) {
     if(argc < 2) {
@@ -60,6 +60,11 @@ int main(int argc, char** argv) {
             std::vector<std::vector<cv::KeyPoint>>(num_frames));
     std::vector<std::vector<cv::Mat>> descriptors(num_cams,
             std::vector<cv::Mat>(num_frames));
+    std::vector<std::vector<std::vector<int>>> has_depth(num_cams,
+            std::vector<std::vector<int>>(num_frames));
+    std::vector<std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>> kp_with_depth(
+            num_cams,
+            std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>(num_frames));
 
     char video[] = "video";
     cvNamedWindow(video);
@@ -92,22 +97,23 @@ int main(int argc, char** argv) {
             projectLidarToCamera(scans, projection, scans_valid, cam);
 
             auto c = clock()/double(CLOCKS_PER_SEC);
-            pcl::PointCloud<pcl::PointXYZ>::Ptr kp_with_depth(
-                    new pcl::PointCloud<pcl::PointXYZ>);
-            std::vector<bool> has_depth = 
+            kp_with_depth[cam][frame] = 
+                pcl::PointCloud<pcl::PointXYZ>::Ptr(
+                        new pcl::PointCloud<pcl::PointXYZ>);
+            has_depth[cam][frame] = 
                 featureDepthAssociation(scans_valid,
                     projection,
                     keypoints[cam][frame],
-                    kp_with_depth);
+                    kp_with_depth[cam][frame]);
             auto d = clock()/double(CLOCKS_PER_SEC);
             std::cerr << "clock: " << a << " " << b << " " << c << " " << d << std::endl;
-            if(cam == 3) {
+            if(cam == 0) {
                 cv::Mat draw;
                 cvtColor(img, draw, cv::COLOR_GRAY2BGR);
                 //cv::drawKeypoints(img, keypoints[frame], draw);
                 for(int k=0; k<keypoints[cam][frame].size(); k++) {
                     auto p = keypoints[cam][frame][k];
-                    if(has_depth[k]) {
+                    if(has_depth[cam][frame][k] != -1) {
                         cv::circle(draw, p.pt, 3, cv::Scalar(0, 0, 255), -1, 8, 0);
                     } else {
                         cv::circle(draw, p.pt, 3, cv::Scalar(255, 200, 0), -1, 8, 0);
@@ -132,6 +138,16 @@ int main(int argc, char** argv) {
                 cvWaitKey(1);
                 cvWaitKey();
             }
+        }
+
+        if(frame > 0) {
+            frameToFrame(
+                    descriptors,
+                    keypoints,
+                    kp_with_depth,
+                    has_depth,
+                    frame,
+                    frame-1);
         }
 
     }
