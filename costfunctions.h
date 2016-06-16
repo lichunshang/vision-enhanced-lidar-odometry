@@ -126,13 +126,13 @@ struct cost3D2D {
         M_original[2] = T(m_z);
         ceres::AngleAxisRotatePoint(x, M_original, M);
 
-        M[0] -= x[3];
-        M[1] -= x[4];
-        M[2] -= x[5];
+        M[0] += x[3];
+        M[1] += x[4];
+        M[2] += x[5];
 
-        T r_0 = P_00 * M[0] + P_01 * M[1] + P_02 + M[2] + P_03;
-        T r_1 = P_10 * M[0] + P_11 * M[1] + P_12 + M[2] + P_13;
-        T r_2 = P_20 * M[0] + P_21 * M[1] + P_22 + M[2] + P_23;
+        T r_0 = P_00 * M[0] + P_01 * M[1] + P_02 * M[2] + P_03;
+        T r_1 = P_10 * M[0] + P_11 * M[1] + P_12 * M[2] + P_13;
+        T r_2 = P_20 * M[0] + P_21 * M[1] + P_22 * M[2] + P_23;
         residual[0] = weight * (r_0/r_2 - s_x);
         residual[1] = weight * (r_1/r_2 - s_y);
         return true;

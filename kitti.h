@@ -14,7 +14,7 @@ int img_width = 1226, // kitti data
     cell_height = img_height / row_cells;
 
 const double PI = 3.1415926535897932384626433832795028,
-    cauchy_thresh_3D2D = 30, // pixels
+    cauchy_thresh_3D2D = 20, // pixels
     cauchy_thresh_3D3D = 0.5, // meters
     match_thresh = 40, // bits, hamming distance for FREAK features
     depth_assoc_thresh = 10; // pixels
