@@ -222,7 +222,6 @@ Eigen::Matrix4d frameToFrame(
             if(matches[i].distance > std::max(2*min_dist, match_thresh)) continue;
             int point1 = matches[i].queryIdx,
                 point2 = matches[i].trainIdx;
-            /*
             if(has_depth[cam][frame1][point1] != -1
                     && has_depth[cam][frame2][point2] != -1) {
                 // 3D 3D
@@ -246,8 +245,8 @@ Eigen::Matrix4d frameToFrame(
                                 )
                             );
                 problem.AddResidualBlock(cost_function, new ceres::CauchyLoss(cauchy_thresh_3D3D), transform);
-            } else*/ if(has_depth[cam][frame1][point1] != -1
-                    /*&& has_depth[cam][frame2][point2] == -1*/) {
+            } else if(has_depth[cam][frame1][point1] != -1
+                    && has_depth[cam][frame2][point2] == -1) {
                 // 3D 2D
                 // std::cerr << "  3D 2D " << point1 << ", " << point2 << std::endl;
                 const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame1]->at(has_depth[cam][frame1][point1]);
@@ -273,19 +272,22 @@ Eigen::Matrix4d frameToFrame(
                                 cam_mat[cam](2,1),
                                 cam_mat[cam](2,2),
                                 cam_mat[cam](2,3),
-                                1
+                                weight_3D2D
                                 )
                             );
-                problem.AddResidualBlock(cost_function, new ceres::ArctanLoss(cauchy_thresh_3D2D), transform);
-            } /*else  if(has_depth[cam][frame1][point1] == -1
+                problem.AddResidualBlock(
+                        cost_function,
+                        new ceres::ArctanLoss(cauchy_thresh_3D2D * weight_3D2D),
+                        transform);
+            } else if(has_depth[cam][frame1][point1] == -1
                     && has_depth[cam][frame2][point2] != -1) {
                 // 2D 3D
                 //std::cerr << "  2D 3D " << point1 << ", " << point2 << std::endl;
                 const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame2]->at(has_depth[cam][frame2][point2]);
                 const auto point2D = keypoints[cam][frame1][point1];
                 ceres::CostFunction* cost_function =
-                    new ceres::AutoDiffCostFunction<cost3D2D,2,6>(
-                            new cost3D2D(
+                    new ceres::AutoDiffCostFunction<cost2D3D,2,6>(
+                            new cost2D3D(
                                 point3D.x,
                                 point3D.y,
                                 point3D.z,
@@ -303,12 +305,14 @@ Eigen::Matrix4d frameToFrame(
                                 cam_mat[cam](2,1),
                                 cam_mat[cam](2,2),
                                 cam_mat[cam](2,3),
-                                0.1
+                                weight_3D2D
                                 )
                             );
-                problem.AddResidualBlock(cost_function, new ceres::CauchyLoss(cauchy_thresh_3D2D), transform);
+                problem.AddResidualBlock(
+                        cost_function,
+                        new ceres::ArctanLoss(cauchy_thresh_3D2D * weight_3D2D),
+                        transform);
             }
-            */
         }
     }
     ceres::Solver::Options options;
@@ -317,10 +321,12 @@ Eigen::Matrix4d frameToFrame(
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
 
+    /*
     for(int i=0; i<6; i++) {
         std::cerr << transform[i] << " ";
     }
     std::cerr << std::endl;
+    */
     return util::pose_mat2vec(transform);
 }
 

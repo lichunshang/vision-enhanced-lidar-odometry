@@ -34,6 +34,8 @@
 #include "costfunctions.h"
 #include "velo.h"
 
+#define VISUALIZE
+
 int main(int argc, char** argv) {
     if(argc < 2) {
         std::cout << "Usage: velo kittidatasetnumber. e.g. velo 00" << std::endl;
@@ -68,14 +70,15 @@ int main(int argc, char** argv) {
             num_cams,
             std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>(num_frames));
 
+#ifdef VISUALIZE
     char video[] = "video";
     cvNamedWindow(video);
+#endif
 
     Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
 
     for(int frame = 0; frame < num_frames; frame++) {
-        std::cerr << "Frame (" << dataset << "): " 
-            << frame << "/" << num_frames << std::endl;
+        auto start = clock()/double(CLOCKS_PER_SEC);
 
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(
                 new pcl::PointCloud<pcl::PointXYZ>);
@@ -89,19 +92,19 @@ int main(int argc, char** argv) {
         for(int cam = 0; cam<num_cams; cam++) {
             cv::Mat img = loadImage(dataset, cam, frame);
 
-            auto a = clock()/double(CLOCKS_PER_SEC);
+            //auto a = clock()/double(CLOCKS_PER_SEC);
             detectFeatures(keypoints[cam][frame],
                     descriptors[cam][frame],
                     gftt,
                     freak,
                     img);
 
-            auto b = clock()/double(CLOCKS_PER_SEC);
+            //auto b = clock()/double(CLOCKS_PER_SEC);
             std::vector<std::vector<cv::Point2f>> projection;
             std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans_valid;
             projectLidarToCamera(scans, projection, scans_valid, cam);
 
-            auto c = clock()/double(CLOCKS_PER_SEC);
+            //auto c = clock()/double(CLOCKS_PER_SEC);
             kp_with_depth[cam][frame] = 
                 pcl::PointCloud<pcl::PointXYZ>::Ptr(
                         new pcl::PointCloud<pcl::PointXYZ>);
@@ -110,8 +113,9 @@ int main(int argc, char** argv) {
                     projection,
                     keypoints[cam][frame],
                     kp_with_depth[cam][frame]);
-            auto d = clock()/double(CLOCKS_PER_SEC);
-            std::cerr << "clock (" << cam << "): " << a << " " << b << " " << c << " " << d << std::endl;
+            //auto d = clock()/double(CLOCKS_PER_SEC);
+            //std::cerr << "clock (" << cam << "): " << a << " " << b << " " << c << " " << d << std::endl;
+#ifdef VISUALIZE
             if(cam == 0) {
                 cv::Mat draw;
                 cvtColor(img, draw, cv::COLOR_GRAY2BGR);
@@ -126,14 +130,6 @@ int main(int argc, char** argv) {
                 }
                 for(int s=0, _s = projection.size(); s<_s; s++) {
                     auto P = projection[s];
-                    /*
-                    if(P.size()) {
-                        std::cerr << s << ": " 
-                            << P[0] << " " 
-                            << P[P.size()-1] << " " 
-                            << P.size() << std::endl;
-                    }
-                    */
                     for(auto p : P) {
                         cv::circle(draw, p, 1, 
                                 cv::Scalar(0, 128, 0), -1, 8, 0);
@@ -143,6 +139,7 @@ int main(int argc, char** argv) {
                 cvWaitKey(1);
                 //cvWaitKey();
             }
+#endif
         }
 
         if(frame > 0) {
@@ -154,9 +151,14 @@ int main(int argc, char** argv) {
                     frame,
                     frame-1);
         }
+        double end = clock()/double(CLOCKS_PER_SEC);
+        std::cerr << "Frame (" << dataset << "): " 
+            << frame+1 << "/" << num_frames << ", " << end-start << std::endl;
         output_line(pose, output);
 
     }
+#ifdef VISUALIZE
     cvWaitKey();
+#endif
     return 0;
 }
