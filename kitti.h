@@ -14,15 +14,20 @@ int img_width = 1226, // kitti data
     cell_height = img_height / row_cells;
 
 const double PI = 3.1415926535897932384626433832795028,
-    weight_3D2D = 0.1,
-    cauchy_thresh_3D2D = 5, // reprojection error, pixels
+    weight_3D2D = 2,
+    cauchy_thresh_3D2D = 0.1, // reprojection error, canonical camera units
     cauchy_thresh_3D3D = 1, // physical distance, meters
     match_thresh = 40, // bits, hamming distance for FREAK features
-    depth_assoc_thresh = 10; // pixels
+    depth_assoc_thresh = 0.015; // canonical camera units
 
 std::vector<Eigen::Matrix<float, 3, 4>, 
-    Eigen::aligned_allocator<Eigen::Matrix<float, 3, 4>>> cam_mat(num_cams);
+    Eigen::aligned_allocator<Eigen::Matrix<float, 3, 4>>> cam_mat;
+std::vector<Eigen::Matrix3f, 
+    Eigen::aligned_allocator<Eigen::Matrix3f>> cam_intrinsic;
+std::vector<Eigen::Vector3f, 
+    Eigen::aligned_allocator<Eigen::Vector3f>> cam_trans;
 Eigen::Matrix4f velo_to_cam, cam_to_velo;
+std::vector<double> min_x, max_x, min_y, max_y;
 
 std::ofstream output;
 
@@ -45,6 +50,24 @@ void loadCalibration(
                 calib_stream >> cam_mat[cam](i,j);
             }
         }
+        Eigen::Matrix3f K = cam_mat[cam].block<3,3>(0,0);
+        Eigen::Vector3f Kt = cam_mat[cam].block<3,1>(0,3);
+        Eigen::Vector3f t = K.inverse() * Kt;
+        cam_trans.push_back(t);
+        cam_intrinsic.push_back(K);
+
+        Eigen::Vector3f min_pt;
+        min_pt << 0, 0, 1;
+        min_pt = K.inverse() * min_pt;
+        min_x.push_back(min_pt(0) / min_pt(2));
+        min_y.push_back(min_pt(1) / min_pt(2));
+        //std::cerr << "min_pt: " << min_pt << std::endl;
+        Eigen::Vector3f max_pt;
+        max_pt << img_width, img_height, 1;
+        max_pt = K.inverse() * max_pt;
+        max_x.push_back(max_pt(0) / max_pt(2));
+        max_y.push_back(max_pt(1) / max_pt(2));
+        //std::cerr << "max_pt: " << max_pt << std::endl;
     }
     calib_stream >> P;
     for(int i=0; i<3; i++) {

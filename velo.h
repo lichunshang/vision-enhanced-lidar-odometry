@@ -1,12 +1,15 @@
 #pragma once
 
 void detectFeatures(
-        std::vector<cv::KeyPoint> &keypoints,
+        std::vector<cv::Point2f> &keypoints,
         cv::Mat &descriptors,
         const cv::Ptr<cv::FeatureDetector> detector,
         const cv::Ptr<cv::DescriptorExtractor> extractor,
-        cv::Mat &img
+        cv::Mat &img,
+        const int which_cam
         ) {
+    Eigen::Matrix3f Kinv = cam_intrinsic[which_cam].inverse();
+    std::vector<cv::KeyPoint> cvKP;
     for(int row=0; row < row_cells; row++) {
         for(int col = 0; col < col_cells; col++) {
             cv::Mat img_cell = img(
@@ -15,16 +18,22 @@ void detectFeatures(
             );
             std::vector<cv::KeyPoint> temp_keypoints;
             detector->detect(img_cell, temp_keypoints);
-            for(std::vector<cv::KeyPoint>::iterator itk = temp_keypoints.begin(); 
-                    itk != temp_keypoints.end(); 
-                    itk++) {
-                itk->pt.x += cell_width * col;
-                itk->pt.y += cell_height * row;
-                keypoints.push_back(*itk);
+            for(auto kp : temp_keypoints) {
+                kp.pt.x += cell_width * col;
+                kp.pt.y += cell_height * row;
+                cvKP.push_back(kp);
             }
         }
     }
-    extractor->compute(img, keypoints, descriptors);
+    // remember! compute MUTATES cvKP
+    extractor->compute(img, cvKP, descriptors);
+    for(auto kp : cvKP) {
+        Eigen::Vector3f p;
+        p << kp.pt.x, 
+            kp.pt.y, 1;
+        p = Kinv * p;
+        keypoints.push_back(cv::Point2f(p(0)/p(2), p(1)/p(2)));
+    }
 }
 
 void projectLidarToCamera(
@@ -35,6 +44,7 @@ void projectLidarToCamera(
         ) {
 
     int bad = 0;
+    Eigen::Vector3f t = cam_trans[which_cam];
 
     for(int s=0; s<scans.size(); s++) {
         pcl::PointCloud<pcl::PointXYZ> projected_points;
@@ -42,16 +52,15 @@ void projectLidarToCamera(
         scans_valid.push_back(pcl::PointCloud<pcl::PointXYZ>::Ptr(
                     new pcl::PointCloud<pcl::PointXYZ>));
         for(int i=0, _i = scans[s]->size(); i<_i; i++) {
-            Eigen::Vector3f p = cam_mat[which_cam] 
-                * scans[s]->at(i).getVector4fMap();
-            pcl::PointXYZ pp(p(0), p(1), p(2));
-            cv::Point2f c(p(0)/p(2), p(1)/p(2));
-            if(p(2) > 0 && c.x >= 0 && c.x < img_width
-                    && c.y >= 0 && c.y < img_height) {
+            pcl::PointXYZ p = scans[s]->at(i);
+            pcl::PointXYZ pp(p.x + t(0), p.y + t(1), p.z + t(2));
+            cv::Point2f c(pp.x/pp.z, pp.y/pp.z);
+            if(pp.z > 0 && c.x >= min_x[which_cam] && c.x < max_x[which_cam]
+                    && c.y >= min_y[which_cam] && c.y < max_y[which_cam]) {
                 // remove points occluded by current point
                 while(projection[s].size() > 0
                         && c.x < projection[s].back().x
-                        && p(2) < projected_points.back().z) {
+                        && pp.z < projected_points.back().z) {
                     projection[s].pop_back();
                     projected_points.points.pop_back();
                     scans_valid[s]->points.pop_back();
@@ -60,7 +69,7 @@ void projectLidarToCamera(
                 // ignore occluded points
                 if(projection[s].size() > 0
                         && c.x < projection[s].back().x
-                        && p(2) > projected_points.back().z) {
+                        && pp.z > projected_points.back().z) {
                     bad++;
                     continue;
                 }
@@ -78,7 +87,7 @@ void projectLidarToCamera(
 std::vector<int> featureDepthAssociation(
         const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> &scans,
         const std::vector<std::vector<cv::Point2f>> &projection,
-        const std::vector<cv::KeyPoint> &keypoints,
+        const std::vector<cv::Point2f> &keypoints,
         pcl::PointCloud<pcl::PointXYZ>::Ptr keypoints_with_depth
         ) {
     std::vector<int> has_depth(keypoints.size(), -1);
@@ -89,7 +98,7 @@ std::vector<int> featureDepthAssociation(
         */
     int has_depth_n = 0;
     for(int k=0; k<keypoints.size(); k++) {
-        cv::KeyPoint kp = keypoints[k];
+        cv::Point2f kp = keypoints[k];
         int last_interp = -1;
         for(int s=0, _s = scans.size(); s<_s; s++) {
             bool found = false;
@@ -100,15 +109,15 @@ std::vector<int> featureDepthAssociation(
             int lo = 0, hi = projection[s].size() - 2, mid = 0;
             while(lo <= hi) {
                 mid = (lo + hi)/2;
-                if(projection[s][mid].x > kp.pt.x) {
+                if(projection[s][mid].x > kp.x) {
                     hi = mid-1;
-                } else if(projection[s][mid+1].x <= kp.pt.x) {
+                } else if(projection[s][mid+1].x <= kp.x) {
                     lo = mid+1;
                 } else {
                     found = true;
                     if(last_interp != -1 
-                            && (projection[s][mid].y > kp.pt.y) !=
-                                (projection[s-1][last_interp].y > kp.pt.y)
+                            && (projection[s][mid].y > kp.y) !=
+                                (projection[s-1][last_interp].y > kp.y)
                             && abs(projection[s][mid].x - 
                                 projection[s][mid+1].x) 
                                 < depth_assoc_thresh
@@ -128,7 +137,7 @@ std::vector<int> featureDepthAssociation(
                               s, mid ---------- interp1 --------- s, mid+1
                          */
                         /*
-                        std::cerr << "depth association: " << kp.pt
+                        std::cerr << "depth association: " << kp
                             << " " << projection[s][mid]
                             << " " << projection[s][mid+1]
                             << " " << projection[s-1][last_interp]
@@ -146,32 +155,32 @@ std::vector<int> featureDepthAssociation(
                                 scans[s]->at(mid+1),
                                 projection[s][mid].x,
                                 projection[s][mid+1].x,
-                                kp.pt.x);
+                                kp.x);
                         pcl::PointXYZ interp2 = util::linterpolate(
                                 scans[s-1]->at(last_interp),
                                 scans[s-1]->at(last_interp+1),
                                 projection[s-1][last_interp].x,
                                 projection[s-1][last_interp+1].x,
-                                kp.pt.x);
+                                kp.x);
                         float i1y = util::linterpolate(
                                 projection[s][mid].y,
                                 projection[s][mid+1].y,
                                 projection[s][mid].x,
                                 projection[s][mid+1].x,
-                                kp.pt.x);
+                                kp.x);
                         float i2y = util::linterpolate(
                                 projection[s-1][last_interp].y,
                                 projection[s-1][last_interp+1].y,
                                 projection[s-1][last_interp].x,
                                 projection[s-1][last_interp+1].x,
-                                kp.pt.x);
+                                kp.x);
 
                         pcl::PointXYZ kpwd = util::linterpolate(
                                 interp1,
                                 interp2,
                                 i1y,
                                 i2y,
-                                kp.pt.y);
+                                kp.y);
 
                         //std::cerr << kpwd << std::endl;
 
@@ -189,23 +198,25 @@ std::vector<int> featureDepthAssociation(
             if(has_depth[k] != -1) break;
         }
     }
-    //std::cerr << "Has depth: " << has_depth_n << "/" << keypoints.size() << std::endl;
+    /*
+    std::cerr << "Has depth: " << has_depth_n << "/" << keypoints.size() << std::endl;
+    */
     return has_depth;
 }
 
 Eigen::Matrix4d frameToFrame(
         const std::vector<std::vector<cv::Mat>> &descriptors,
-        const std::vector<std::vector<std::vector<cv::KeyPoint>>> &keypoints,
+        const std::vector<std::vector<std::vector<cv::Point2f>>> &keypoints,
         const std::vector<std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>> &keypoints_with_depth,
         const std::vector<std::vector<std::vector<int>>> has_depth,
         int frame1,
-        int frame2
+        int frame2,
+        double transform[6]
         ) {
     cv::BFMatcher matcher(cv::NORM_HAMMING);
     std::vector<cv::DMatch> matches;
 
     ceres::Problem problem;
-    double transform[6] = {0,0,0,0,0,1};
 
     for(int cam = 0; cam<num_cams; cam++) {
         matcher.match(descriptors[cam][frame1], descriptors[cam][frame2], matches);
@@ -225,13 +236,16 @@ Eigen::Matrix4d frameToFrame(
             if(has_depth[cam][frame1][point1] != -1
                     && has_depth[cam][frame2][point2] != -1) {
                 // 3D 3D
-                //std::cerr << "  3D 3D " << point1 << ", " << point2 << std::endl;
                 const pcl::PointXYZ pointM =
                     keypoints_with_depth[cam][frame1]
                         ->at(has_depth[cam][frame1][point1]);
                 const pcl::PointXYZ pointS =
                     keypoints_with_depth[cam][frame2]
                         ->at(has_depth[cam][frame2][point2]);
+                auto pointMS = pointM;
+                util::subtract_assign(pointMS, pointS);
+                if(util::norm2(pointMS) > 10) continue;
+                //std::cerr << "  3D 3D " << cam << ": " << pointM<< ", " << pointS << std::endl;
                 ceres::CostFunction* cost_function = 
                     new ceres::AutoDiffCostFunction<cost3D3D,3,6>(
                             new cost3D3D(
@@ -245,7 +259,7 @@ Eigen::Matrix4d frameToFrame(
                                 )
                             );
                 problem.AddResidualBlock(cost_function, new ceres::CauchyLoss(cauchy_thresh_3D3D), transform);
-            } else if(has_depth[cam][frame1][point1] != -1
+            } /*else if(has_depth[cam][frame1][point1] != -1
                     && has_depth[cam][frame2][point2] == -1) {
                 // 3D 2D
                 // std::cerr << "  3D 2D " << point1 << ", " << point2 << std::endl;
@@ -258,8 +272,8 @@ Eigen::Matrix4d frameToFrame(
                                 point3D.x,
                                 point3D.y,
                                 point3D.z,
-                                point2D.pt.x,
-                                point2D.pt.y,
+                                point2D.x,
+                                point2D.y,
                                 cam_mat[cam](0,0),
                                 cam_mat[cam](0,1),
                                 cam_mat[cam](0,2),
@@ -291,8 +305,8 @@ Eigen::Matrix4d frameToFrame(
                                 point3D.x,
                                 point3D.y,
                                 point3D.z,
-                                point2D.pt.x,
-                                point2D.pt.y,
+                                point2D.x,
+                                point2D.y,
                                 cam_mat[cam](0,0),
                                 cam_mat[cam](0,1),
                                 cam_mat[cam](0,2),
@@ -312,12 +326,13 @@ Eigen::Matrix4d frameToFrame(
                         cost_function,
                         new ceres::ArctanLoss(cauchy_thresh_3D2D * weight_3D2D),
                         transform);
-            }
+            }*/
         }
     }
     ceres::Solver::Options options;
     options.linear_solver_type = ceres::DENSE_SCHUR;
     options.minimizer_progress_to_stdout = false;
+    options.num_threads = 1;
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
 

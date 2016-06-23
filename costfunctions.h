@@ -79,6 +79,7 @@ struct cost3D3D {
            weight;
 };
 
+/*
 struct cost3D2D {
     // 3D point to 2D point reprojection distance
     cost3D2D(
@@ -87,36 +88,18 @@ struct cost3D2D {
             double m_z,
             double s_x,
             double s_y,
-            double P_00, // P is the 3 by 4 projection matrix
-            double P_01,
-            double P_02,
-            double P_03,
-            double P_10,
-            double P_11,
-            double P_12,
-            double P_13,
-            double P_20,
-            double P_21,
-            double P_22,
-            double P_23,
+            double t_x,
+            double t_y,
+            double t_z,
             double weight) :
         m_x(m_x),
         m_y(m_y),
         m_z(m_z),
         s_x(s_x),
         s_y(s_y),
-        P_00(P_00),
-        P_01(P_01),
-        P_02(P_02),
-        P_03(P_03),
-        P_10(P_10),
-        P_11(P_11),
-        P_12(P_12),
-        P_13(P_13),
-        P_20(P_20),
-        P_21(P_21),
-        P_22(P_22),
-        P_23(P_23),
+        t_x(t_x),
+        t_y(t_y),
+        t_z(t_z),
         weight(weight) {}
     template <typename T>
     bool operator()(const T* x, T* residual) const {
@@ -209,7 +192,7 @@ struct cost2D3D {
            P_20, P_21, P_22, P_23,
            weight;
 };
-
+*/
 struct cost2D2D {
     // 2D point to 2D point epipolar constraint
     cost2D2D(

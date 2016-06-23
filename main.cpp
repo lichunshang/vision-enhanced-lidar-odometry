@@ -44,11 +44,15 @@ int main(int argc, char** argv) {
     std::string dataset = argv[1];
     std::ofstream output;
     output.open(("results/" + std::string(argv[1]) + ".txt").c_str());
+    loadImage(dataset, 0, 0); // to set width and height
     loadCalibration(dataset);
     loadTimes(dataset);
 
     for(int i=0; i<num_cams; i++) {
         std::cerr << cam_mat[i] << std::endl;
+        std::cerr << cam_intrinsic[i] << std::endl;
+        //std::cerr << cam_trans[i] << std::endl;
+        //std::cerr << min_x[i] << " " << min_y[i] << " " << max_x[i] << " " << max_y[i] << " " << std::endl;
     }
 
     //std::cerr << velo_to_cam << std::endl;
@@ -60,8 +64,8 @@ int main(int argc, char** argv) {
     cv::Ptr<cv::xfeatures2d::FREAK> freak = cv::xfeatures2d::FREAK::create();
     cv::Ptr<cv::GFTTDetector> gftt = cv::GFTTDetector::create(corner_count, 0.01, 3);
 
-    std::vector<std::vector<std::vector<cv::KeyPoint>>> keypoints(num_cams,
-            std::vector<std::vector<cv::KeyPoint>>(num_frames));
+    std::vector<std::vector<std::vector<cv::Point2f>>> keypoints(num_cams,
+            std::vector<std::vector<cv::Point2f>>(num_frames));
     std::vector<std::vector<cv::Mat>> descriptors(num_cams,
             std::vector<cv::Mat>(num_frames));
     std::vector<std::vector<std::vector<int>>> has_depth(num_cams,
@@ -76,6 +80,7 @@ int main(int argc, char** argv) {
 #endif
 
     Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
+    double transform[6] = {0, 0, 0, 0, 0, 0.5};
 
     for(int frame = 0; frame < num_frames; frame++) {
         auto start = clock()/double(CLOCKS_PER_SEC);
@@ -97,7 +102,8 @@ int main(int argc, char** argv) {
                     descriptors[cam][frame],
                     gftt,
                     freak,
-                    img);
+                    img,
+                    cam);
 
             //auto b = clock()/double(CLOCKS_PER_SEC);
             std::vector<std::vector<cv::Point2f>> projection;
@@ -116,22 +122,30 @@ int main(int argc, char** argv) {
             //auto d = clock()/double(CLOCKS_PER_SEC);
             //std::cerr << "clock (" << cam << "): " << a << " " << b << " " << c << " " << d << std::endl;
 #ifdef VISUALIZE
-            if(cam == 0) {
+            if(cam == 0 && frame > 0) {
                 cv::Mat draw;
                 cvtColor(img, draw, cv::COLOR_GRAY2BGR);
                 //cv::drawKeypoints(img, keypoints[frame], draw);
                 for(int k=0; k<keypoints[cam][frame].size(); k++) {
                     auto p = keypoints[cam][frame][k];
+                    Eigen::Vector3f pe;
+                    pe << p.x, p.y, 1;
+                    pe = cam_intrinsic[cam] * pe;
+                    cv::Point2f pp(pe(0)/pe(2), pe(1)/pe(2));
                     if(has_depth[cam][frame][k] != -1) {
-                        cv::circle(draw, p.pt, 3, cv::Scalar(0, 0, 255), -1, 8, 0);
+                        cv::circle(draw, pp, 3, cv::Scalar(0, 0, 255), -1, 8, 0);
                     } else {
-                        cv::circle(draw, p.pt, 3, cv::Scalar(255, 200, 0), -1, 8, 0);
+                        cv::circle(draw, pp, 3, cv::Scalar(255, 200, 0), -1, 8, 0);
                     }
                 }
                 for(int s=0, _s = projection.size(); s<_s; s++) {
                     auto P = projection[s];
                     for(auto p : P) {
-                        cv::circle(draw, p, 1, 
+                        Eigen::Vector3f pe;
+                        pe << p.x, p.y, 1;
+                        pe = cam_intrinsic[cam] * pe;
+                        cv::Point2f pp(pe(0)/pe(2), pe(1)/pe(2));
+                        cv::circle(draw, pp, 1, 
                                 cv::Scalar(0, 128, 0), -1, 8, 0);
                     }
                 }
@@ -149,11 +163,19 @@ int main(int argc, char** argv) {
                     kp_with_depth,
                     has_depth,
                     frame,
-                    frame-1);
+                    frame-1,
+                    transform);
+            double end = clock()/double(CLOCKS_PER_SEC);
+            std::cerr << "Frame (" << dataset << "):" 
+                << std::setw(5) << frame+1 << "/" << num_frames << ", "
+                << std::fixed << std::setprecision(3) <<  end-start << " |";
+            for(int j=0; j<6; j++) {
+                std::cerr << std::setfill(' ') << std::setw(8)
+                    << std::fixed << std::setprecision(4)
+                    << transform[j];
+            }
+            std::cerr << std::endl;
         }
-        double end = clock()/double(CLOCKS_PER_SEC);
-        std::cerr << "Frame (" << dataset << "): " 
-            << frame+1 << "/" << num_frames << ", " << end-start << std::endl;
         output_line(pose, output);
 
     }
