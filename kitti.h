@@ -3,10 +3,7 @@
 const int num_cams = 4,
     corner_count = 10, // number of features per cell
     row_cells = 5, 
-    col_cells = 30,
-    dist_thresh = 60, // square of min distance between new detected features and existing features
-    proj_dist_thresh = 10,
-    bundle_length = 5;
+    col_cells = 30;
 
 int img_width = 1226, // kitti data
     img_height = 370,
@@ -15,10 +12,11 @@ int img_width = 1226, // kitti data
 
 const double PI = 3.1415926535897932384626433832795028,
     weight_3D2D = 2,
-    cauchy_thresh_3D2D = 0.1, // reprojection error, canonical camera units
-    cauchy_thresh_3D3D = 1, // physical distance, meters
+    loss_thresh_3D2D = 0.01, // reprojection error, canonical camera units
+    loss_thresh_3D3D = 1, // physical distance, meters
     match_thresh = 40, // bits, hamming distance for FREAK features
-    depth_assoc_thresh = 0.015; // canonical camera units
+    depth_assoc_thresh = 0.015, // canonical camera units
+    z_weight = 0.6;
 
 std::vector<Eigen::Matrix<float, 3, 4>, 
     Eigen::aligned_allocator<Eigen::Matrix<float, 3, 4>>> cam_mat;
@@ -51,20 +49,21 @@ void loadCalibration(
             }
         }
         Eigen::Matrix3f K = cam_mat[cam].block<3,3>(0,0);
+        Eigen::Matrix3f Kinv = K.inverse();
         Eigen::Vector3f Kt = cam_mat[cam].block<3,1>(0,3);
-        Eigen::Vector3f t = K.inverse() * Kt;
+        Eigen::Vector3f t = Kinv * Kt;
         cam_trans.push_back(t);
         cam_intrinsic.push_back(K);
 
         Eigen::Vector3f min_pt;
         min_pt << 0, 0, 1;
-        min_pt = K.inverse() * min_pt;
+        min_pt = Kinv * min_pt;
         min_x.push_back(min_pt(0) / min_pt(2));
         min_y.push_back(min_pt(1) / min_pt(2));
         //std::cerr << "min_pt: " << min_pt << std::endl;
         Eigen::Vector3f max_pt;
         max_pt << img_width, img_height, 1;
-        max_pt = K.inverse() * max_pt;
+        max_pt = Kinv * max_pt;
         max_x.push_back(max_pt(0) / max_pt(2));
         max_y.push_back(max_pt(1) / max_pt(2));
         //std::cerr << "max_pt: " << max_pt << std::endl;

@@ -255,11 +255,11 @@ Eigen::Matrix4d frameToFrame(
                                 pointS.x,
                                 pointS.y,
                                 pointS.z,
-                                1
+                                z_weight
                                 )
                             );
-                problem.AddResidualBlock(cost_function, new ceres::CauchyLoss(cauchy_thresh_3D3D), transform);
-            } /*else if(has_depth[cam][frame1][point1] != -1
+                problem.AddResidualBlock(cost_function, new ceres::CauchyLoss(loss_thresh_3D3D), transform);
+            }/* else if(has_depth[cam][frame1][point1] != -1
                     && has_depth[cam][frame2][point2] == -1) {
                 // 3D 2D
                 // std::cerr << "  3D 2D " << point1 << ", " << point2 << std::endl;
@@ -274,24 +274,17 @@ Eigen::Matrix4d frameToFrame(
                                 point3D.z,
                                 point2D.x,
                                 point2D.y,
-                                cam_mat[cam](0,0),
-                                cam_mat[cam](0,1),
-                                cam_mat[cam](0,2),
-                                cam_mat[cam](0,3),
-                                cam_mat[cam](1,0),
-                                cam_mat[cam](1,1),
-                                cam_mat[cam](1,2),
-                                cam_mat[cam](1,3),
-                                cam_mat[cam](2,0),
-                                cam_mat[cam](2,1),
-                                cam_mat[cam](2,2),
-                                cam_mat[cam](2,3),
-                                weight_3D2D
+                                cam_trans[cam](0),
+                                cam_trans[cam](1),
+                                cam_trans[cam](2)
                                 )
                             );
                 problem.AddResidualBlock(
                         cost_function,
-                        new ceres::ArctanLoss(cauchy_thresh_3D2D * weight_3D2D),
+                        new ceres::ScaledLoss(
+                            new ceres::ArctanLoss(loss_thresh_3D2D), 
+                            weight_3D2D,
+                            ceres::TAKE_OWNERSHIP),
                         transform);
             } else if(has_depth[cam][frame1][point1] == -1
                     && has_depth[cam][frame2][point2] != -1) {
@@ -307,24 +300,17 @@ Eigen::Matrix4d frameToFrame(
                                 point3D.z,
                                 point2D.x,
                                 point2D.y,
-                                cam_mat[cam](0,0),
-                                cam_mat[cam](0,1),
-                                cam_mat[cam](0,2),
-                                cam_mat[cam](0,3),
-                                cam_mat[cam](1,0),
-                                cam_mat[cam](1,1),
-                                cam_mat[cam](1,2),
-                                cam_mat[cam](1,3),
-                                cam_mat[cam](2,0),
-                                cam_mat[cam](2,1),
-                                cam_mat[cam](2,2),
-                                cam_mat[cam](2,3),
-                                weight_3D2D
+                                cam_trans[cam](0),
+                                cam_trans[cam](1),
+                                cam_trans[cam](2)
                                 )
                             );
                 problem.AddResidualBlock(
                         cost_function,
-                        new ceres::ArctanLoss(cauchy_thresh_3D2D * weight_3D2D),
+                        new ceres::ScaledLoss(
+                            new ceres::ArctanLoss(loss_thresh_3D2D), 
+                            weight_3D2D,
+                            ceres::TAKE_OWNERSHIP),
                         transform);
             }*/
         }

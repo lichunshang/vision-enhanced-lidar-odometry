@@ -179,8 +179,5 @@ int main(int argc, char** argv) {
         output_line(pose, output);
 
     }
-#ifdef VISUALIZE
-    cvWaitKey();
-#endif
     return 0;
 }
