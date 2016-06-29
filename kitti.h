@@ -11,8 +11,10 @@ int img_width = 1226, // kitti data
     cell_height = img_height / row_cells;
 
 const double PI = 3.1415926535897932384626433832795028,
-    weight_3D2D = 2,
+    weight_3D2D = 30,
+    weight_2D2D = 50,
     loss_thresh_3D2D = 0.01, // reprojection error, canonical camera units
+    loss_thresh_2D2D = 0.01,
     loss_thresh_3D3D = 1, // physical distance, meters
     match_thresh = 40, // bits, hamming distance for FREAK features
     depth_assoc_thresh = 0.015, // canonical camera units
