@@ -89,3 +89,52 @@ class util {
         transform[5] = T(2, 3);
     }
 };
+
+class UF {
+    public:
+        UF(int n, int k) {
+            _n = n;
+            _k = k;
+            _p = std::vector<int>(n);
+            for(int i=0; i<n; i++) {
+                _p[i] = i;
+            }
+        }
+        void Union(int i, int j) {
+            _p[Find(i)] = Find(j);
+        }
+        int Find(int i) {
+            if (i > _p.size()) {
+                std::cerr << "WTF how can you find something out of bounds" << std::endl;
+            }
+            return i == _p[i] ? i : _p[i] = Find(_p[i]);
+        }
+        void aggregate(std::map<int, std::set<int> > &q, int group_size) {
+            for(int i=0; i<_n; i++) {
+                Find(i);
+            }
+            for(int i=0; i<_n; i++) {
+                _q[Find(i)].insert(i);
+            }
+            std::cerr << "Distinct classes: " << _q.size() << std::endl;
+            int groups = 0;
+            for(std::map<int, std::set<int> >::iterator it = _q.begin();
+                    it != _q.end();
+                    it++) {
+                //std::cerr << "Class of " << it->second.size() << std::endl;
+                if(it->second.size() == group_size/2) {
+                    for(std::set<int>::iterator itt = it->second.begin();
+                            itt != it->second.end();
+                            itt++) {
+                        q[groups].insert(*itt);
+                    }
+                    groups++;
+                }
+            }
+            std::cerr << "groups: " << groups << std::endl;
+        }
+    private:
+        int _n, _k;
+        std::vector<int> _p;
+        std::map<int, std::set<int> > _q;
+};

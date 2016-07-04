@@ -3,7 +3,7 @@
 const int num_cams = 4,
     corner_count = 10, // number of features per cell
     row_cells = 5, 
-    col_cells = 30;
+    col_cells = 20;
 
 int img_width = 1226, // kitti data
     img_height = 370,
@@ -11,11 +11,11 @@ int img_width = 1226, // kitti data
     cell_height = img_height / row_cells;
 
 const double PI = 3.1415926535897932384626433832795028,
-    weight_3D2D = 30,
-    weight_2D2D = 50,
-    loss_thresh_3D2D = 0.01, // reprojection error, canonical camera units
-    loss_thresh_2D2D = 0.01,
-    loss_thresh_3D3D = 1, // physical distance, meters
+    weight_3D2D = 10,
+    weight_2D2D = 100,
+    loss_thresh_3D2D = 0.005, // reprojection error, canonical camera units
+    loss_thresh_2D2D = 0.0002,
+    loss_thresh_3D3D = 0.1, // physical distance, meters
     match_thresh = 40, // bits, hamming distance for FREAK features
     depth_assoc_thresh = 0.015, // canonical camera units
     z_weight = 0.6;
@@ -33,7 +33,7 @@ std::ofstream output;
 
 std::vector<double> times;
 
-const std::string kittipath = "/mnt/data/kitti/dataset/sequences/";
+const std::string kittipath = "/home/dllu/kitti/dataset/sequences/";
 
 void loadCalibration(
         const std::string & dataset

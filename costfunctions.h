@@ -176,13 +176,21 @@ struct cost2D2D {
         M_original[1] = T(m_y);
         M_original[2] = T(1.0);
         ceres::AngleAxisRotatePoint(x, M_original, M);
+        M[0] /= M[2];
+        M[1] /= M[2];
         // E = [t]_x R
-        // S dot E M = residual
+        // S^T E M = residual
         // S dot (t cross (R M)) = residual
         residual[0] =
                 M[0] * (-s_y * x[5] + x[4]) +
                 M[1] * ( s_x * x[5] - x[3]) + 
                 M[2] * (-s_x * x[4] + s_y * x[3]);
+        /*
+        residual[0] =
+                s_x * (-M[1] * x[5] + x[4]) +
+                s_y * ( M[0] * x[5] - x[3]) + 
+                s_z * (-M[0] * x[4] + M[1] * x[3]);
+                */
         return true;
     }
     double m_x, m_y, m_z,

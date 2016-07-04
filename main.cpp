@@ -34,9 +34,10 @@
 #include "costfunctions.h"
 #include "velo.h"
 
-#define VISUALIZE
+//#define VISUALIZE
 
 int main(int argc, char** argv) {
+    cv::setUseOptimized(true); 
     if(argc < 2) {
         std::cout << "Usage: velo kittidatasetnumber. e.g. velo 00" << std::endl;
         return 1;

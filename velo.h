@@ -1,5 +1,12 @@
 #pragma once
 
+enum ResidualType {
+    RESIDUAL_3D3D,
+    RESIDUAL_3D2D,
+    RESIDUAL_2D3D,
+    RESIDUAL_2D2D
+};
+
 void detectFeatures(
         std::vector<cv::Point2f> &keypoints,
         cv::Mat &descriptors,
@@ -203,6 +210,11 @@ std::vector<int> featureDepthAssociation(
     */
     return has_depth;
 }
+void residualStats(
+        ceres::Problem &problem,
+        std::vector<std::vector<std::pair<int, int>>> &good_matches,
+        std::vector<std::vector<ResidualType>> &residual_type
+        );
 
 Eigen::Matrix4d frameToFrame(
         const std::vector<std::vector<cv::Mat>> &descriptors,
@@ -214,15 +226,36 @@ Eigen::Matrix4d frameToFrame(
         double transform[6]
         ) {
     cv::BFMatcher matcher(cv::NORM_HAMMING);
-    std::vector<std::vector<cv::DMatch>> matches(num_cams);
+    std::vector<std::vector<std::pair<int, int>>> good_matches(num_cams);
 
     ceres::Problem problem;
 
+    std::vector<std::vector<ResidualType>> residual_type(num_cams);
+
     for(int cam = 0; cam<num_cams; cam++) {
+        //double start = clock()/double(CLOCKS_PER_SEC);
+        std::vector<cv::DMatch> matches;
         matcher.match(
                 descriptors[cam][frame1],
-                descriptors[cam][frame2], matches[cam]);
-        auto &mc = matches[cam];
+                descriptors[cam][frame2], matches);
+        /*
+        cv::Ptr<cv::cuda::DescriptorMatcher> d_matcher = 
+            cv::cuda::DescriptorMatcher::createBFMatcher(cv::NORM_HAMMING);
+        const cv::cuda::GpuMat d_query(descriptors[cam][frame1]);
+        const cv::cuda::GpuMat d_train(descriptors[cam][frame2]);
+        cv::cuda::GpuMat d_matches;
+        d_matcher->matchAsync(d_query, d_train, d_matches);
+
+        d_matcher->matchConvert(d_matches, matches[cam]);
+        */
+
+        /*
+        double end = clock()/double(CLOCKS_PER_SEC);
+        std::cerr << "Matching: " << descriptors[cam][frame1].size()
+            << ", " << descriptors[cam][frame2].size() 
+            << "; " << end-start << std::endl;
+            */
+        auto &mc = matches;
         // find minimum matching distance and filter out the ones more than twice as big as it
         double min_dist = 1e9, max_dist = 0;
         for(int i=0; i<mc.size(); i++) {
@@ -236,7 +269,8 @@ Eigen::Matrix4d frameToFrame(
             if(mc[i].distance > std::max(2*min_dist, match_thresh)) continue;
             int point1 = mc[i].queryIdx,
                 point2 = mc[i].trainIdx;
-            /*if(has_depth[cam][frame1][point1] != -1
+            bool block_created = false;
+            if(has_depth[cam][frame1][point1] != -1
                     && has_depth[cam][frame2][point2] != -1) {
                 // 3D 3D
                 const pcl::PointXYZ pointM =
@@ -257,11 +291,16 @@ Eigen::Matrix4d frameToFrame(
                                 pointM.z,
                                 pointS.x,
                                 pointS.y,
-                                pointS.z,
-                                z_weight
+                                pointS.z
                                 )
                             );
-                problem.AddResidualBlock(cost_function, new ceres::CauchyLoss(loss_thresh_3D3D), transform);
+                problem.AddResidualBlock(
+                        cost_function,
+                        new ceres::CauchyLoss(loss_thresh_3D3D),
+                        transform);
+
+                residual_type[cam].push_back(RESIDUAL_3D3D);
+                block_created = true;
             } else if(has_depth[cam][frame1][point1] == -1
                     && has_depth[cam][frame2][point2] == -1) {
                 // 2D 2D
@@ -284,12 +323,15 @@ Eigen::Matrix4d frameToFrame(
                                 weight_2D2D,
                                 ceres::TAKE_OWNERSHIP),
                             transform);
+                    residual_type[cam].push_back(RESIDUAL_2D2D);
+                    block_created = true;
                 }
             } else if(has_depth[cam][frame1][point1] != -1
                     && has_depth[cam][frame2][point2] == -1) {
                 // 3D 2D
                 // std::cerr << "  3D 2D " << point1 << ", " << point2 << std::endl;
-                const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame1]->at(has_depth[cam][frame1][point1]);
+                const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame1]
+                    ->at(has_depth[cam][frame1][point1]);
                 const auto point2D = keypoints[cam][frame2][point2];
 
                 ceres::CostFunction* cost_function =
@@ -312,11 +354,15 @@ Eigen::Matrix4d frameToFrame(
                             weight_3D2D,
                             ceres::TAKE_OWNERSHIP),
                         transform);
-            } else */if(/*has_depth[cam][frame1][point1] == -1
-                    && */has_depth[cam][frame2][point2] != -1) {
+
+                residual_type[cam].push_back(RESIDUAL_3D2D);
+                block_created = true;
+            } else if(has_depth[cam][frame1][point1] == -1
+                    && has_depth[cam][frame2][point2] != -1) {
                 // 2D 3D
                 //std::cerr << "  2D 3D " << point1 << ", " << point2 << std::endl;
-                const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame2]->at(has_depth[cam][frame2][point2]);
+                const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame2]
+                    ->at(has_depth[cam][frame2][point2]);
                 const auto point2D = keypoints[cam][frame1][point1];
                 ceres::CostFunction* cost_function =
                     new ceres::AutoDiffCostFunction<cost2D3D,2,6>(
@@ -338,15 +384,22 @@ Eigen::Matrix4d frameToFrame(
                             weight_3D2D,
                             ceres::TAKE_OWNERSHIP),
                         transform);
+
+                residual_type[cam].push_back(RESIDUAL_2D3D);
+                block_created = true;
             }
+            if(block_created)
+                good_matches[cam].push_back(std::make_pair(point1, point2));
         }
     }
+    //residualStats(problem, good_matches, residual_type);
     ceres::Solver::Options options;
     options.linear_solver_type = ceres::DENSE_SCHUR;
     options.minimizer_progress_to_stdout = false;
     options.num_threads = 1;
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
+    //residualStats(problem, good_matches, residual_type);
 
     /*
     for(int i=0; i<6; i++) {
@@ -357,3 +410,100 @@ Eigen::Matrix4d frameToFrame(
     return util::pose_mat2vec(transform);
 }
 
+void residualStats(
+        ceres::Problem &problem,
+        std::vector<std::vector<std::pair<int, int>>> &good_matches,
+        std::vector<std::vector<ResidualType>> &residual_type
+        ) {
+    // compute some statistics about residuals
+    double cost;
+    std::vector<double> residuals;
+    ceres::Problem::EvaluateOptions evaluate_options;
+    evaluate_options.apply_loss_function = false;
+    problem.Evaluate(evaluate_options, &cost, &residuals, NULL, NULL);
+    std::vector<double> residuals_3D3D, residuals_3D2D, residuals_2D3D, residuals_2D2D;
+    int ri = 0;
+    for(int cam = 0; cam < num_cams; cam++) {
+        auto &mc = good_matches[cam];
+        for(int i=0; i<mc.size(); i++) {
+            switch(residual_type[cam][i]) {
+                case RESIDUAL_3D3D:
+                    residuals_3D3D.push_back(
+                            sqrt(
+                                residuals[ri]*residuals[ri] + 
+                                residuals[ri+1]*residuals[ri+1] + 
+                                residuals[ri+2]*residuals[ri+2])
+                            );
+                    ri += 3;
+                    break;
+                case RESIDUAL_3D2D:
+                    residuals_3D2D.push_back(
+                            sqrt(
+                                residuals[ri]*residuals[ri] + 
+                                residuals[ri+1]*residuals[ri+1]
+                                )
+                            );
+                    ri += 2;
+                    break;
+                case RESIDUAL_2D3D:
+                    residuals_2D3D.push_back(
+                            sqrt(
+                                residuals[ri]*residuals[ri] + 
+                                residuals[ri+1]*residuals[ri+1]
+                                )
+                            );
+                    ri += 2;
+                    break;
+                case RESIDUAL_2D2D:
+                    residuals_2D2D.push_back(abs(residuals[ri]));
+                    ri++;
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+    double sum_3D3D = 0, sum_3D2D = 0, sum_2D3D = 0, sum_2D2D = 0;
+    for(auto r : residuals_3D3D) {sum_3D3D += r;}
+    for(auto r : residuals_3D2D) {sum_3D2D += r;}
+    for(auto r : residuals_2D3D) {sum_2D3D += r;}
+    for(auto r : residuals_2D2D) {sum_2D2D += r;}
+    std::sort(residuals_3D3D.begin(), residuals_3D3D.end());
+    std::sort(residuals_3D2D.begin(), residuals_3D2D.end());
+    std::sort(residuals_2D3D.begin(), residuals_2D3D.end());
+    std::sort(residuals_2D2D.begin(), residuals_2D2D.end());
+    std::cerr << "Cost: " << cost
+        << " Residual blocks: " << problem.NumResidualBlocks()
+        << " Residuals: " << problem.NumResiduals() << " " << ri << " " << residuals.size()
+        << std::endl
+        << " Total good matches: " 
+        << " " << good_matches[0].size()
+        << " " << good_matches[1].size()
+        << " " << good_matches[2].size()
+        << " " << good_matches[3].size()
+        << " " << residual_type[0].size()
+        << " " << residual_type[1].size()
+        << " " << residual_type[2].size()
+        << " " << residual_type[3].size()
+        << std::endl;
+    if(residuals_3D3D.size())
+    std::cerr << "Residual 3D3D:"
+        << " median " << std::fixed << std::setprecision(10) << residuals_3D3D[residuals_3D3D.size()/2]
+        << " mean " << std::fixed << std::setprecision(10) << sum_3D3D/residuals_3D3D.size() 
+        << " count " << residuals_3D3D.size() << std::endl;
+    if(residuals_3D2D.size())
+    std::cerr << "Residual 3D2D:"
+        << " median " << std::fixed << std::setprecision(10) << residuals_3D2D[residuals_3D2D.size()/2]
+        << " mean " << std::fixed << std::setprecision(10) << sum_3D2D/residuals_3D2D.size() 
+        << " count " << residuals_3D2D.size() << std::endl;
+    if(residuals_2D3D.size())
+    std::cerr << "Residual 2D3D:"
+        << " median " << std::fixed << std::setprecision(10) << residuals_2D3D[residuals_2D3D.size()/2]
+        << " mean " << std::fixed << std::setprecision(10) << sum_2D3D/residuals_2D3D.size() 
+        << " count " << residuals_2D3D.size() << std::endl;
+    if(residuals_2D2D.size())
+    std::cerr << "Residual 2D2D:"
+        << " median " << std::fixed << std::setprecision(10) << residuals_2D2D[residuals_2D2D.size()/2]
+        << " mean " << std::fixed << std::setprecision(10) << sum_2D2D/residuals_2D2D.size() 
+        << " count " << residuals_2D2D.size() << std::endl;
+}
