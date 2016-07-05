@@ -223,10 +223,10 @@ Eigen::Matrix4d frameToFrame(
         const std::vector<std::vector<std::vector<int>>> has_depth,
         int frame1,
         int frame2,
-        double transform[6]
+        double transform[6],
+        std::vector<std::vector<std::pair<int, int>>> &good_matches
         ) {
     cv::BFMatcher matcher(cv::NORM_HAMMING);
-    std::vector<std::vector<std::pair<int, int>>> good_matches(num_cams);
 
     ceres::Problem problem;
 
@@ -269,8 +269,7 @@ Eigen::Matrix4d frameToFrame(
             if(mc[i].distance > std::max(2*min_dist, match_thresh)) continue;
             int point1 = mc[i].queryIdx,
                 point2 = mc[i].trainIdx;
-            bool block_created = false;
-            if(has_depth[cam][frame1][point1] != -1
+            /*if(has_depth[cam][frame1][point1] != -1
                     && has_depth[cam][frame2][point2] != -1) {
                 // 3D 3D
                 const pcl::PointXYZ pointM =
@@ -300,53 +299,63 @@ Eigen::Matrix4d frameToFrame(
                         transform);
 
                 residual_type[cam].push_back(RESIDUAL_3D3D);
-                block_created = true;
-            } else if(has_depth[cam][frame1][point1] == -1
+                good_matches[cam].push_back(std::make_pair(point1, point2));
+            } else*/ if(has_depth[cam][frame1][point1] == -1
                     && has_depth[cam][frame2][point2] == -1) {
                 // 2D 2D
-                if(cam == 0) {
-                    const auto pointM = keypoints[cam][frame1][point1];
-                    const auto pointS = keypoints[cam][frame2][point2];
-                    ceres::CostFunction* cost_function =
-                        new ceres::AutoDiffCostFunction<cost2D2D,1,6>(
-                                new cost2D2D(
-                                    pointM.x,
-                                    pointM.y,
-                                    pointS.x,
-                                    pointS.y
-                                    )
-                                );
-                    problem.AddResidualBlock(
-                            cost_function,
-                            new ceres::ScaledLoss(
-                                new ceres::ArctanLoss(loss_thresh_2D2D),
-                                weight_2D2D,
-                                ceres::TAKE_OWNERSHIP),
-                            transform);
-                    residual_type[cam].push_back(RESIDUAL_2D2D);
-                    block_created = true;
-                }
+                const auto pointM = keypoints[cam][frame1][point1];
+                const auto pointS = keypoints[cam][frame2][point2];
+                cost2D2D *cost =
+                    new cost2D2D(
+                            pointM.x,
+                            pointM.y,
+                            pointS.x,
+                            pointS.y,
+                            cam_trans[cam](0),
+                            cam_trans[cam](1),
+                            cam_trans[cam](2)
+                            );
+                double residual_test[1];
+                (*cost)(transform, residual_test);
+                if(residual_test[0] > loss_thresh_2D2D*3) continue;
+                ceres::CostFunction* cost_function =
+                    new ceres::AutoDiffCostFunction<cost2D2D,1,6>(cost);
+                problem.AddResidualBlock(
+                        cost_function,
+                        new ceres::ScaledLoss(
+                            new ceres::ArctanLoss(loss_thresh_2D2D),
+                            weight_2D2D,
+                            ceres::TAKE_OWNERSHIP),
+                        transform);
+                residual_type[cam].push_back(RESIDUAL_2D2D);
+                good_matches[cam].push_back(std::make_pair(point1, point2));
             } else if(has_depth[cam][frame1][point1] != -1
-                    && has_depth[cam][frame2][point2] == -1) {
+                    /*&& has_depth[cam][frame2][point2] == -1*/) {
                 // 3D 2D
                 // std::cerr << "  3D 2D " << point1 << ", " << point2 << std::endl;
                 const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame1]
                     ->at(has_depth[cam][frame1][point1]);
                 const auto point2D = keypoints[cam][frame2][point2];
 
-                ceres::CostFunction* cost_function =
-                    new ceres::AutoDiffCostFunction<cost3D2D,2,6>(
-                            new cost3D2D(
-                                point3D.x,
-                                point3D.y,
-                                point3D.z,
-                                point2D.x,
-                                point2D.y,
-                                cam_trans[cam](0),
-                                cam_trans[cam](1),
-                                cam_trans[cam](2)
-                                )
+                cost3D2D *cost = 
+                    new cost3D2D(
+                            point3D.x,
+                            point3D.y,
+                            point3D.z,
+                            point2D.x,
+                            point2D.y,
+                            cam_trans[cam](0),
+                            cam_trans[cam](1),
+                            cam_trans[cam](2)
                             );
+                double residual_test[2];
+                (*cost)(transform, residual_test);
+                if(residual_test[0] * residual_test[0] +
+                        residual_test[1] * residual_test[1] 
+                        > loss_thresh_3D2D*3) continue;
+
+                ceres::CostFunction* cost_function =
+                    new ceres::AutoDiffCostFunction<cost3D2D,2,6>(cost);
                 problem.AddResidualBlock(
                         cost_function,
                         new ceres::ScaledLoss(
@@ -356,27 +365,33 @@ Eigen::Matrix4d frameToFrame(
                         transform);
 
                 residual_type[cam].push_back(RESIDUAL_3D2D);
-                block_created = true;
-            } else if(has_depth[cam][frame1][point1] == -1
-                    && has_depth[cam][frame2][point2] != -1) {
+                good_matches[cam].push_back(std::make_pair(point1, point2));
+            } /*else*/ if(/*has_depth[cam][frame1][point1] == -1
+                    &&*/ has_depth[cam][frame2][point2] != -1) {
                 // 2D 3D
                 //std::cerr << "  2D 3D " << point1 << ", " << point2 << std::endl;
                 const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame2]
                     ->at(has_depth[cam][frame2][point2]);
                 const auto point2D = keypoints[cam][frame1][point1];
-                ceres::CostFunction* cost_function =
-                    new ceres::AutoDiffCostFunction<cost2D3D,2,6>(
-                            new cost2D3D(
-                                point3D.x,
-                                point3D.y,
-                                point3D.z,
-                                point2D.x,
-                                point2D.y,
-                                cam_trans[cam](0),
-                                cam_trans[cam](1),
-                                cam_trans[cam](2)
-                                )
+                cost2D3D *cost = 
+                    new cost2D3D(
+                            point3D.x,
+                            point3D.y,
+                            point3D.z,
+                            point2D.x,
+                            point2D.y,
+                            cam_trans[cam](0),
+                            cam_trans[cam](1),
+                            cam_trans[cam](2)
                             );
+                double residual_test[2];
+                (*cost)(transform, residual_test);
+                if(residual_test[0] * residual_test[0] +
+                        residual_test[1] * residual_test[1] 
+                        > loss_thresh_3D2D*3) continue;
+
+                ceres::CostFunction* cost_function =
+                    new ceres::AutoDiffCostFunction<cost2D3D,2,6>(cost);
                 problem.AddResidualBlock(
                         cost_function,
                         new ceres::ScaledLoss(
@@ -386,10 +401,8 @@ Eigen::Matrix4d frameToFrame(
                         transform);
 
                 residual_type[cam].push_back(RESIDUAL_2D3D);
-                block_created = true;
-            }
-            if(block_created)
                 good_matches[cam].push_back(std::make_pair(point1, point2));
+            }
         }
     }
     //residualStats(problem, good_matches, residual_type);
@@ -399,7 +412,7 @@ Eigen::Matrix4d frameToFrame(
     options.num_threads = 1;
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
-    //residualStats(problem, good_matches, residual_type);
+    residualStats(problem, good_matches, residual_type);
 
     /*
     for(int i=0; i<6; i++) {

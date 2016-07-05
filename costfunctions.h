@@ -106,8 +106,8 @@ struct cost3D2D {
         M[1] += x[4] + T(t_y);
         M[2] += x[5] + T(t_z);
 
-        residual[0] = M[0]/M[2] - T(s_x);
-        residual[1] = M[1]/M[2] - T(s_y);
+        residual[0] = M[0] - T(s_x) * M[2];
+        residual[1] = M[1] - T(s_y) * M[2];
         return true;
     }
     double m_x, m_y, m_z,
@@ -147,8 +147,8 @@ struct cost2D3D {
         M[0] += T(t_x);
         M[1] += T(t_y);
         M[2] += T(t_z);
-        residual[0] = M[0]/M[2] - T(s_x);
-        residual[1] = M[1]/M[2] - T(s_y);
+        residual[0] = M[0] - T(s_x) * M[2];
+        residual[1] = M[1] - T(s_y) * M[2];
 
         return true;
     }
@@ -163,11 +163,17 @@ struct cost2D2D {
             double m_x,
             double m_y,
             double s_x,
-            double s_y) :
+            double s_y,
+            double t_x,
+            double t_y,
+            double t_z) :
         m_x(m_x),
         m_y(m_y),
         s_x(s_x),
-        s_y(s_y) {}
+        s_y(s_y),
+        t_x(t_x),
+        t_y(t_y),
+        t_z(t_z) {}
 
     template <typename T>
     bool operator()(const T* x, T* residual) const {
@@ -176,25 +182,23 @@ struct cost2D2D {
         M_original[1] = T(m_y);
         M_original[2] = T(1.0);
         ceres::AngleAxisRotatePoint(x, M_original, M);
-        M[0] /= M[2];
-        M[1] /= M[2];
         // E = [t]_x R
         // S^T E M = residual
         // S dot (t cross (R M)) = residual
+        T Rtt[3] = {T(t_x), T(t_y), T(t_z)}, tt[3];
+        ceres::AngleAxisRotatePoint(x, Rtt, tt);
+        T tt_x = -tt[0] + x[3] + T(t_x),
+          tt_y = -tt[1] + x[4] + T(t_y),
+          tt_z = -tt[2] + x[5] + T(t_z);
         residual[0] =
-                M[0] * (-s_y * x[5] + x[4]) +
-                M[1] * ( s_x * x[5] - x[3]) + 
-                M[2] * (-s_x * x[4] + s_y * x[3]);
-        /*
-        residual[0] =
-                s_x * (-M[1] * x[5] + x[4]) +
-                s_y * ( M[0] * x[5] - x[3]) + 
-                s_z * (-M[0] * x[4] + M[1] * x[3]);
-                */
+                M[0] * (-s_y * tt_z + tt_y) +
+                M[1] * ( s_x * tt_z - tt_x) + 
+                M[2] * (-s_x * tt_y + s_y * tt_x);
         return true;
     }
-    double m_x, m_y, m_z,
-           s_x, s_y, s_z;
+    double m_x, m_y,
+           s_x, s_y,
+           t_x, t_y, t_z;
 };
 
 struct bundle2D {
@@ -221,11 +225,11 @@ struct bundle2D {
         M_original[2] = T(point[2]) - camera[5];
         ceres::AngleAxisRotatePoint(rot, M_original, M);
 
-        M[0] += t_x;
-        M[1] += t_y;
-        M[2] += t_z;
-        residual[0] = M[0]/M[2] - s_x;
-        residual[1] = M[1]/M[2] - s_y;
+        M[0] += T(t_x);
+        M[1] += T(t_y);
+        M[2] += T(t_z);
+        residual[0] = M[0] - s_x * M[2];
+        residual[1] = M[1] - s_y * M[2];
         return true;
     }
     double s_x, s_y,
