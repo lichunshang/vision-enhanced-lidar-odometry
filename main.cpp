@@ -82,6 +82,7 @@ int main(int argc, char** argv) {
 
     Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
     double transform[6] = {0, 0, 0, 0, 0, 0.5};
+    std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans_prev;
 
     for(int frame = 0; frame < num_frames; frame++) {
         auto start = clock()/double(CLOCKS_PER_SEC);
@@ -131,6 +132,8 @@ int main(int argc, char** argv) {
                     keypoints,
                     kp_with_depth,
                     has_depth,
+                    scans,
+                    scans_prev,
                     frame,
                     frame-1,
                     transform,
@@ -145,6 +148,7 @@ int main(int argc, char** argv) {
                     << transform[j];
             }
             std::cerr << std::endl;
+
 #ifdef VISUALIZE
             int cam = 0;
             cv::Mat draw;
@@ -195,6 +199,7 @@ int main(int argc, char** argv) {
             cvWaitKey(1);
 #endif
         }
+        scans_prev = scans;
         output_line(pose, output);
 
     }

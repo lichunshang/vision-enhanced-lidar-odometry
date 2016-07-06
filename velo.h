@@ -210,6 +210,53 @@ std::vector<int> featureDepthAssociation(
     */
     return has_depth;
 }
+
+void matchFeatures(
+        const std::vector<std::vector<cv::Mat>> &descriptors,
+        const int frame1,
+        const int frame2,
+        const int cam1,
+        const int cam2,
+        std::vector<std::pair<int, int>> &matches
+        ) {
+    cv::BFMatcher matcher(cv::NORM_HAMMING);
+    //double start = clock()/double(CLOCKS_PER_SEC);
+    std::vector<cv::DMatch> mc;
+    matcher.match(
+            descriptors[cam1][frame1],
+            descriptors[cam2][frame2], mc);
+    /*
+    cv::Ptr<cv::cuda::DescriptorMatcher> d_matcher = 
+        cv::cuda::DescriptorMatcher::createBFMatcher(cv::NORM_HAMMING);
+    const cv::cuda::GpuMat d_query(descriptors[cam][frame1]);
+    const cv::cuda::GpuMat d_train(descriptors[cam][frame2]);
+    cv::cuda::GpuMat d_matches;
+    d_matcher->matchAsync(d_query, d_train, d_matches);
+
+    d_matcher->matchConvert(d_matches, matches[cam]);
+    */
+
+    /*
+    double end = clock()/double(CLOCKS_PER_SEC);
+    std::cerr << "Matching: " << descriptors[cam][frame1].size()
+        << ", " << descriptors[cam][frame2].size() 
+        << "; " << end-start << std::endl;
+        */
+    // find minimum matching distance and filter out the ones more than twice as big as it
+    double min_dist = 1e9, max_dist = 0;
+    for(int i=0; i<mc.size(); i++) {
+        if(mc[i].distance < min_dist) min_dist = mc[i].distance;
+        if(mc[i].distance > max_dist) max_dist = mc[i].distance;
+    }
+    //std::cerr << "Matches cam " << cam << ": " <<  mc.size() 
+        //<< " " << min_dist << " " << max_dist
+        //<< std::endl;
+    for(int i=0; i<mc.size(); i++) {
+        if(mc[i].distance > std::max(2*min_dist, match_thresh)) continue;
+        matches.push_back(std::make_pair(mc[i].queryIdx, mc[i].trainIdx));
+    }
+}
+
 void residualStats(
         ceres::Problem &problem,
         std::vector<std::vector<std::pair<int, int>>> &good_matches,
@@ -221,55 +268,26 @@ Eigen::Matrix4d frameToFrame(
         const std::vector<std::vector<std::vector<cv::Point2f>>> &keypoints,
         const std::vector<std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>> &keypoints_with_depth,
         const std::vector<std::vector<std::vector<int>>> has_depth,
-        int frame1,
-        int frame2,
+        const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans_M,
+        const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans_S,
+        const int frame1,
+        const int frame2,
         double transform[6],
         std::vector<std::vector<std::pair<int, int>>> &good_matches
         ) {
-    cv::BFMatcher matcher(cv::NORM_HAMMING);
 
     ceres::Problem problem;
 
     std::vector<std::vector<ResidualType>> residual_type(num_cams);
 
+    // Visual odometry
     for(int cam = 0; cam<num_cams; cam++) {
-        //double start = clock()/double(CLOCKS_PER_SEC);
-        std::vector<cv::DMatch> matches;
-        matcher.match(
-                descriptors[cam][frame1],
-                descriptors[cam][frame2], matches);
-        /*
-        cv::Ptr<cv::cuda::DescriptorMatcher> d_matcher = 
-            cv::cuda::DescriptorMatcher::createBFMatcher(cv::NORM_HAMMING);
-        const cv::cuda::GpuMat d_query(descriptors[cam][frame1]);
-        const cv::cuda::GpuMat d_train(descriptors[cam][frame2]);
-        cv::cuda::GpuMat d_matches;
-        d_matcher->matchAsync(d_query, d_train, d_matches);
-
-        d_matcher->matchConvert(d_matches, matches[cam]);
-        */
-
-        /*
-        double end = clock()/double(CLOCKS_PER_SEC);
-        std::cerr << "Matching: " << descriptors[cam][frame1].size()
-            << ", " << descriptors[cam][frame2].size() 
-            << "; " << end-start << std::endl;
-            */
-        auto &mc = matches;
-        // find minimum matching distance and filter out the ones more than twice as big as it
-        double min_dist = 1e9, max_dist = 0;
+        std::vector<std::pair<int, int>> mc;
+        matchFeatures(descriptors, frame1, frame2, cam, cam, mc);
         for(int i=0; i<mc.size(); i++) {
-            if(mc[i].distance < min_dist) min_dist = mc[i].distance;
-            if(mc[i].distance > max_dist) max_dist = mc[i].distance;
-        }
-        //std::cerr << "Matches cam " << cam << ": " <<  mc.size() 
-            //<< " " << min_dist << " " << max_dist
-            //<< std::endl;
-        for(int i=0; i<mc.size(); i++) {
-            if(mc[i].distance > std::max(2*min_dist, match_thresh)) continue;
-            int point1 = mc[i].queryIdx,
-                point2 = mc[i].trainIdx;
-            /*if(has_depth[cam][frame1][point1] != -1
+            int point1 = mc[i].first,
+                point2 = mc[i].second;
+            if(has_depth[cam][frame1][point1] != -1
                     && has_depth[cam][frame2][point2] != -1) {
                 // 3D 3D
                 const pcl::PointXYZ pointM =
@@ -280,27 +298,37 @@ Eigen::Matrix4d frameToFrame(
                         ->at(has_depth[cam][frame2][point2]);
                 auto pointMS = pointM;
                 util::subtract_assign(pointMS, pointS);
-                if(util::norm2(pointMS) > 10) continue;
                 //std::cerr << "  3D 3D " << cam << ": " << pointM<< ", " << pointS << std::endl;
-                ceres::CostFunction* cost_function = 
-                    new ceres::AutoDiffCostFunction<cost3D3D,3,6>(
-                            new cost3D3D(
+                cost3D3D *cost = new cost3D3D(
                                 pointM.x,
                                 pointM.y,
                                 pointM.z,
                                 pointS.x,
                                 pointS.y,
                                 pointS.z
-                                )
-                            );
+                                );
+                double residual_test[3];
+                (*cost)(transform, residual_test);
+                if(
+                        residual_test[0] * residual_test[0] + 
+                        residual_test[1] * residual_test[1] +
+                        residual_test[2] * residual_test[2]
+                        >
+                        loss_thresh_3D3D*outlier_reject * 
+                        loss_thresh_3D3D*outlier_reject) {
+                    continue;
+                }
+                ceres::CostFunction* cost_function = 
+                    new ceres::AutoDiffCostFunction<cost3D3D,3,6>(
+                            cost);
                 problem.AddResidualBlock(
                         cost_function,
-                        new ceres::CauchyLoss(loss_thresh_3D3D),
+                        new ceres::ArctanLoss(loss_thresh_3D3D),
                         transform);
 
                 residual_type[cam].push_back(RESIDUAL_3D3D);
                 good_matches[cam].push_back(std::make_pair(point1, point2));
-            } else*/ if(has_depth[cam][frame1][point1] == -1
+            } else if(has_depth[cam][frame1][point1] == -1
                     && has_depth[cam][frame2][point2] == -1) {
                 // 2D 2D
                 const auto pointM = keypoints[cam][frame1][point1];
@@ -317,7 +345,7 @@ Eigen::Matrix4d frameToFrame(
                             );
                 double residual_test[1];
                 (*cost)(transform, residual_test);
-                if(residual_test[0] > loss_thresh_2D2D*3) continue;
+                if(residual_test[0] > loss_thresh_2D2D*outlier_reject) continue;
                 ceres::CostFunction* cost_function =
                     new ceres::AutoDiffCostFunction<cost2D2D,1,6>(cost);
                 problem.AddResidualBlock(
@@ -329,10 +357,10 @@ Eigen::Matrix4d frameToFrame(
                         transform);
                 residual_type[cam].push_back(RESIDUAL_2D2D);
                 good_matches[cam].push_back(std::make_pair(point1, point2));
-            } else if(has_depth[cam][frame1][point1] != -1
+            }
+            if(has_depth[cam][frame1][point1] != -1
                     /*&& has_depth[cam][frame2][point2] == -1*/) {
                 // 3D 2D
-                // std::cerr << "  3D 2D " << point1 << ", " << point2 << std::endl;
                 const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame1]
                     ->at(has_depth[cam][frame1][point1]);
                 const auto point2D = keypoints[cam][frame2][point2];
@@ -352,7 +380,8 @@ Eigen::Matrix4d frameToFrame(
                 (*cost)(transform, residual_test);
                 if(residual_test[0] * residual_test[0] +
                         residual_test[1] * residual_test[1] 
-                        > loss_thresh_3D2D*3) continue;
+                        > loss_thresh_3D2D*outlier_reject 
+                        * loss_thresh_3D2D*outlier_reject) continue;
 
                 ceres::CostFunction* cost_function =
                     new ceres::AutoDiffCostFunction<cost3D2D,2,6>(cost);
@@ -366,10 +395,10 @@ Eigen::Matrix4d frameToFrame(
 
                 residual_type[cam].push_back(RESIDUAL_3D2D);
                 good_matches[cam].push_back(std::make_pair(point1, point2));
-            } /*else*/ if(/*has_depth[cam][frame1][point1] == -1
+            }
+            if(/*has_depth[cam][frame1][point1] == -1
                     &&*/ has_depth[cam][frame2][point2] != -1) {
                 // 2D 3D
-                //std::cerr << "  2D 3D " << point1 << ", " << point2 << std::endl;
                 const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame2]
                     ->at(has_depth[cam][frame2][point2]);
                 const auto point2D = keypoints[cam][frame1][point1];
@@ -388,7 +417,8 @@ Eigen::Matrix4d frameToFrame(
                 (*cost)(transform, residual_test);
                 if(residual_test[0] * residual_test[0] +
                         residual_test[1] * residual_test[1] 
-                        > loss_thresh_3D2D*3) continue;
+                        > loss_thresh_3D2D*outlier_reject
+                        * loss_thresh_3D2D*outlier_reject) continue;
 
                 ceres::CostFunction* cost_function =
                     new ceres::AutoDiffCostFunction<cost2D3D,2,6>(cost);
@@ -402,6 +432,30 @@ Eigen::Matrix4d frameToFrame(
 
                 residual_type[cam].push_back(RESIDUAL_2D3D);
                 good_matches[cam].push_back(std::make_pair(point1, point2));
+            }
+        }
+    }
+
+    // Point set registration
+    std::vector<pcl::KdTreeFLANN<pcl::PointXYZ>> kd_trees(scans_S.size());
+    for(int s=0; s<scans_S.size(); s++) {
+        kd_trees[s].setInputCloud(scans_S[s]);
+    }
+
+    for(int sm = 0; sm < scans_M.size(); sm++) {
+        for(int smi = 0; smi < scans_M[sm]->size(); smi+= icp_skip) {
+            pcl::PointXYZ pointM = scans_M[sm]->at(smi);
+            pcl::PointCloud<pcl::PointXYZ> nearest_points;
+            std::vector<int> ids;
+            int nearest_point_i = 0, nearest_point_j = 0;
+            for(int ss = 0; ss < scans_S.size(); ss++) {
+                std::vector<int> id(1);
+                std::vector<float> dist2(1);
+                if(kd_trees[ss].nearestKSearch(pointM, 1, id, dist2) <= 0 ||
+                        dist2[0] > correspondence_thresh_icp) {
+                    continue;
+                }
+                nearest_points.push_back(scans_S[ss]->at(id[0]));
             }
         }
     }
