@@ -447,7 +447,7 @@ Eigen::Matrix4d frameToFrame(
     }
 
     for(int sm = 0; sm < scans_M.size(); sm++) {
-        for(int smi = 1; smi < scans_M[sm]->size()-1; smi+= icp_skip) {
+        for(int smi = 0; smi < scans_M[sm]->size(); smi+= icp_skip) {
             pcl::PointXYZ pointM = scans_M[sm]->at(smi);
             pcl::PointXYZ pointM_untransformed = pointM;
             util::transform_point(pointM, transform);
@@ -462,9 +462,8 @@ Eigen::Matrix4d frameToFrame(
              np_s_j ......... * .......
                             np_j
              */
-            std::vector<int> ids;
             int np_i = 0, np_j = 0, np_k = 0;
-            int np_s_i = 0, np_s_j = 0;
+            int np_s_i = -1, np_s_j = -1;
             double np_dist_i = INF, np_dist_j = INF;
             for(int ss = 0; ss < scans_S.size(); ss++) {
                 std::vector<int> id(1);
@@ -490,14 +489,20 @@ Eigen::Matrix4d frameToFrame(
                     np_s_j = ss;
                 }
             }
-            pcl::PointXYZ np_k_1 = scans_S[np_s_i]->at(np_i+1),
-                          np_k_2 = scans_S[np_s_i]->at(np_i-1);
+            if(np_s_i == -1 || np_s_j == -1) {
+                continue;
+            }
+            int np_k_n = scans_S[np_s_i]->size(),
+                np_k_1p = (np_i+1) % np_k_n,
+                np_k_2p = (np_i-1 + np_k_n) % np_k_n;
+            pcl::PointXYZ np_k_1 = scans_S[np_s_i]->at(np_k_1p),
+                          np_k_2 = scans_S[np_s_i]->at(np_k_2p);
             util::subtract_assign(np_k_1, pointM);
             util::subtract_assign(np_k_2, pointM);
             if(util::norm2(np_k_1) < util::norm2(np_k_2)) {
-                np_k = np_i+1;
+                np_k = np_k_1p;
             } else {
-                np_k = np_i-1;
+                np_k = np_k_2p;
             }
             pcl::PointXYZ s0, s1, s2;
             s0 = scans_S[np_s_i]->at(np_i);

@@ -91,9 +91,9 @@ class util {
     static void transform_point(pcl::PointXYZ &p, const double transform[6]) {
         double x[3] = {p.x, p.y, p.z}, y[3] = {0, 0, 0};
         ceres::AngleAxisRotatePoint(transform, x, y);
-        p.x = y[0] + transform[4];
-        p.y = y[1] + transform[5];
-        p.z = y[2] + transform[6];
+        p.x = y[0] + transform[3];
+        p.y = y[1] + transform[4];
+        p.z = y[2] + transform[5];
     }
 };
 
