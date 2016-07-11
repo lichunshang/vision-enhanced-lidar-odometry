@@ -17,26 +17,30 @@ void detectFeatures(
         ) {
     Eigen::Matrix3f Kinv = cam_intrinsic[which_cam].inverse();
     std::vector<cv::KeyPoint> cvKP;
-    for(int row=0; row < row_cells; row++) {
-        for(int col = 0; col < col_cells; col++) {
-            cv::Mat img_cell = img(
-                cv::Range(cell_height * row, cell_height * (row + 1)),
-                cv::Range(cell_width * col, cell_width * (col + 1))
-            );
-            std::vector<cv::KeyPoint> temp_keypoints;
-            detector->detect(img_cell, temp_keypoints);
-            for(auto kp : temp_keypoints) {
-                kp.pt.x += cell_width * col;
-                kp.pt.y += cell_height * row;
-                cvKP.push_back(kp);
+    if (row_cells > 1 || col_cells > 1) {
+        for(int row=0; row < row_cells; row++) {
+            for(int col = 0; col < col_cells; col++) {
+                cv::Mat img_cell = img(
+                    cv::Range(cell_height * row, cell_height * (row + 1)),
+                    cv::Range(cell_width * col, cell_width * (col + 1))
+                );
+                std::vector<cv::KeyPoint> temp_keypoints;
+                detector->detect(img_cell, temp_keypoints);
+                for(auto kp : temp_keypoints) {
+                    kp.pt.x += cell_width * col;
+                    kp.pt.y += cell_height * row;
+                    cvKP.push_back(kp);
+                }
             }
         }
+    } else {
+        detector->detect(img, cvKP);
     }
     // remember! compute MUTATES cvKP
     extractor->compute(img, cvKP, descriptors);
     for(auto kp : cvKP) {
         Eigen::Vector3f p;
-        p << kp.pt.x, 
+        p << kp.pt.x,
             kp.pt.y, 1;
         p = Kinv * p;
         keypoints.push_back(cv::Point2f(p(0)/p(2), p(1)/p(2)));
@@ -99,7 +103,7 @@ std::vector<int> featureDepthAssociation(
         ) {
     std::vector<int> has_depth(keypoints.size(), -1);
     /*
-    std::cerr << "Sizes: " <<  scans.size() << " " 
+    std::cerr << "Sizes: " <<  scans.size() << " "
         << projection.size() << " "
         << keypoints.size() << std::endl;
         */
@@ -122,14 +126,14 @@ std::vector<int> featureDepthAssociation(
                     lo = mid+1;
                 } else {
                     found = true;
-                    if(last_interp != -1 
+                    if(last_interp != -1
                             && (projection[s][mid].y > kp.y) !=
                                 (projection[s-1][last_interp].y > kp.y)
-                            && abs(projection[s][mid].x - 
-                                projection[s][mid+1].x) 
+                            && abs(projection[s][mid].x -
+                                projection[s][mid+1].x)
                                 < depth_assoc_thresh
-                            && abs(projection[s-1][last_interp].x - 
-                                projection[s-1][last_interp+1].x) 
+                            && abs(projection[s-1][last_interp].x -
+                                projection[s-1][last_interp+1].x)
                                 < depth_assoc_thresh
                             ) {
                         /*
@@ -226,7 +230,7 @@ void matchFeatures(
             descriptors[cam1][frame1],
             descriptors[cam2][frame2], mc);
     /*
-    cv::Ptr<cv::cuda::DescriptorMatcher> d_matcher = 
+    cv::Ptr<cv::cuda::DescriptorMatcher> d_matcher =
         cv::cuda::DescriptorMatcher::createBFMatcher(cv::NORM_HAMMING);
     const cv::cuda::GpuMat d_query(descriptors[cam][frame1]);
     const cv::cuda::GpuMat d_train(descriptors[cam][frame2]);
@@ -239,7 +243,7 @@ void matchFeatures(
     /*
     double end = clock()/double(CLOCKS_PER_SEC);
     std::cerr << "Matching: " << descriptors[cam][frame1].size()
-        << ", " << descriptors[cam][frame2].size() 
+        << ", " << descriptors[cam][frame2].size()
         << "; " << end-start << std::endl;
         */
     // find minimum matching distance and filter out the ones more than twice as big as it
@@ -248,7 +252,7 @@ void matchFeatures(
         if(mc[i].distance < min_dist) min_dist = mc[i].distance;
         if(mc[i].distance > max_dist) max_dist = mc[i].distance;
     }
-    //std::cerr << "Matches cam " << cam << ": " <<  mc.size() 
+    //std::cerr << "Matches cam " << cam << ": " <<  mc.size()
         //<< " " << min_dist << " " << max_dist
         //<< std::endl;
     for(int i=0; i<mc.size(); i++) {
@@ -310,15 +314,15 @@ Eigen::Matrix4d frameToFrame(
                 double residual_test[3];
                 (*cost)(transform, residual_test);
                 if(
-                        residual_test[0] * residual_test[0] + 
+                        residual_test[0] * residual_test[0] +
                         residual_test[1] * residual_test[1] +
                         residual_test[2] * residual_test[2]
                         >
-                        loss_thresh_3D3D*outlier_reject * 
+                        loss_thresh_3D3D*outlier_reject *
                         loss_thresh_3D3D*outlier_reject) {
                     continue;
                 }
-                ceres::CostFunction* cost_function = 
+                ceres::CostFunction* cost_function =
                     new ceres::AutoDiffCostFunction<cost3D3D,3,6>(
                             cost);
                 problem.AddResidualBlock(
@@ -365,7 +369,7 @@ Eigen::Matrix4d frameToFrame(
                     ->at(has_depth[cam][frame1][point1]);
                 const auto point2D = keypoints[cam][frame2][point2];
 
-                cost3D2D *cost = 
+                cost3D2D *cost =
                     new cost3D2D(
                             point3D.x,
                             point3D.y,
@@ -379,8 +383,8 @@ Eigen::Matrix4d frameToFrame(
                 double residual_test[2];
                 (*cost)(transform, residual_test);
                 if(residual_test[0] * residual_test[0] +
-                        residual_test[1] * residual_test[1] 
-                        > loss_thresh_3D2D*outlier_reject 
+                        residual_test[1] * residual_test[1]
+                        > loss_thresh_3D2D*outlier_reject
                         * loss_thresh_3D2D*outlier_reject) continue;
 
                 ceres::CostFunction* cost_function =
@@ -388,7 +392,7 @@ Eigen::Matrix4d frameToFrame(
                 problem.AddResidualBlock(
                         cost_function,
                         new ceres::ScaledLoss(
-                            new ceres::ArctanLoss(loss_thresh_3D2D), 
+                            new ceres::ArctanLoss(loss_thresh_3D2D),
                             weight_3D2D,
                             ceres::TAKE_OWNERSHIP),
                         transform);
@@ -402,7 +406,7 @@ Eigen::Matrix4d frameToFrame(
                 const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame2]
                     ->at(has_depth[cam][frame2][point2]);
                 const auto point2D = keypoints[cam][frame1][point1];
-                cost2D3D *cost = 
+                cost2D3D *cost =
                     new cost2D3D(
                             point3D.x,
                             point3D.y,
@@ -416,7 +420,7 @@ Eigen::Matrix4d frameToFrame(
                 double residual_test[2];
                 (*cost)(transform, residual_test);
                 if(residual_test[0] * residual_test[0] +
-                        residual_test[1] * residual_test[1] 
+                        residual_test[1] * residual_test[1]
                         > loss_thresh_3D2D*outlier_reject
                         * loss_thresh_3D2D*outlier_reject) continue;
 
@@ -425,7 +429,7 @@ Eigen::Matrix4d frameToFrame(
                 problem.AddResidualBlock(
                         cost_function,
                         new ceres::ScaledLoss(
-                            new ceres::ArctanLoss(loss_thresh_3D2D), 
+                            new ceres::ArctanLoss(loss_thresh_3D2D),
                             weight_3D2D,
                             ceres::TAKE_OWNERSHIP),
                         transform);
@@ -443,11 +447,25 @@ Eigen::Matrix4d frameToFrame(
     }
 
     for(int sm = 0; sm < scans_M.size(); sm++) {
-        for(int smi = 0; smi < scans_M[sm]->size(); smi+= icp_skip) {
+        for(int smi = 1; smi < scans_M[sm]->size()-1; smi+= icp_skip) {
             pcl::PointXYZ pointM = scans_M[sm]->at(smi);
-            pcl::PointCloud<pcl::PointXYZ> nearest_points;
+            pcl::PointXYZ pointM_untransformed = pointM;
+            util::transform_point(pointM, transform);
+            /*
+             Point-to-plane ICP where plane is defined by
+             three Nearest Points (np):
+                        np_i     np_k
+             np_s_i ..... * ..... * .....
+                           \     /
+                            \   /
+                             \ /
+             np_s_j ......... * .......
+                            np_j
+             */
             std::vector<int> ids;
-            int nearest_point_i = 0, nearest_point_j = 0;
+            int np_i = 0, np_j = 0, np_k = 0;
+            int np_s_i = 0, np_s_j = 0;
+            double np_dist_i = INF, np_dist_j = INF;
             for(int ss = 0; ss < scans_S.size(); ss++) {
                 std::vector<int> id(1);
                 std::vector<float> dist2(1);
@@ -455,8 +473,56 @@ Eigen::Matrix4d frameToFrame(
                         dist2[0] > correspondence_thresh_icp) {
                     continue;
                 }
-                nearest_points.push_back(scans_S[ss]->at(id[0]));
+                pcl::PointXYZ np = scans_S[ss]->at(id[0]);
+
+                util::subtract_assign(np, pointM);
+                double d = util::norm2(np);
+                if(d < np_dist_i) {
+                    np_dist_j = np_dist_i;
+                    np_j = np_i;
+                    np_s_j = np_s_i;
+                    np_dist_i = d;
+                    np_i = id[0];
+                    np_s_i = ss;
+                } else if(d < np_dist_j) {
+                    np_dist_j = d;
+                    np_j = id[0];
+                    np_s_j = ss;
+                }
             }
+            pcl::PointXYZ np_k_1 = scans_S[np_s_i]->at(np_i+1),
+                          np_k_2 = scans_S[np_s_i]->at(np_i-1);
+            util::subtract_assign(np_k_1, pointM);
+            util::subtract_assign(np_k_2, pointM);
+            if(util::norm2(np_k_1) < util::norm2(np_k_2)) {
+                np_k = np_i+1;
+            } else {
+                np_k = np_i-1;
+            }
+            pcl::PointXYZ s0, s1, s2;
+            s0 = scans_S[np_s_i]->at(np_i);
+            s1 = scans_S[np_s_j]->at(np_j);
+            s2 = scans_S[np_s_i]->at(np_k);
+            Eigen::Vector3f
+                v0 = s0.getVector3fMap(),
+                v1 = s1.getVector3fMap(),
+                v2 = s2.getVector3fMap();
+            Eigen::Vector3f N = (v1 - v0).cross(v2 - v0);
+            N /= N.norm();
+            ceres::CostFunction* cost_function =
+                new ceres::AutoDiffCostFunction<cost3DPD, 1, 6>(
+                        new cost3DPD(
+                            pointM_untransformed.x,
+                            pointM_untransformed.y,
+                            pointM_untransformed.z,
+                            N[0], N[1], N[2],
+                            v0[0], v0[1], v0[2]
+                            )
+                        );
+            problem.AddResidualBlock(
+                    cost_function,
+                    new ceres::CauchyLoss(loss_thresh_3DPD),
+                    transform);
         }
     }
     //residualStats(problem, good_matches, residual_type);
@@ -497,8 +563,8 @@ void residualStats(
                 case RESIDUAL_3D3D:
                     residuals_3D3D.push_back(
                             sqrt(
-                                residuals[ri]*residuals[ri] + 
-                                residuals[ri+1]*residuals[ri+1] + 
+                                residuals[ri]*residuals[ri] +
+                                residuals[ri+1]*residuals[ri+1] +
                                 residuals[ri+2]*residuals[ri+2])
                             );
                     ri += 3;
@@ -506,7 +572,7 @@ void residualStats(
                 case RESIDUAL_3D2D:
                     residuals_3D2D.push_back(
                             sqrt(
-                                residuals[ri]*residuals[ri] + 
+                                residuals[ri]*residuals[ri] +
                                 residuals[ri+1]*residuals[ri+1]
                                 )
                             );
@@ -515,7 +581,7 @@ void residualStats(
                 case RESIDUAL_2D3D:
                     residuals_2D3D.push_back(
                             sqrt(
-                                residuals[ri]*residuals[ri] + 
+                                residuals[ri]*residuals[ri] +
                                 residuals[ri+1]*residuals[ri+1]
                                 )
                             );
@@ -543,7 +609,7 @@ void residualStats(
         << " Residual blocks: " << problem.NumResidualBlocks()
         << " Residuals: " << problem.NumResiduals() << " " << ri << " " << residuals.size()
         << std::endl
-        << " Total good matches: " 
+        << " Total good matches: "
         << " " << good_matches[0].size()
         << " " << good_matches[1].size()
         << " " << good_matches[2].size()
@@ -556,21 +622,21 @@ void residualStats(
     if(residuals_3D3D.size())
     std::cerr << "Residual 3D3D:"
         << " median " << std::fixed << std::setprecision(10) << residuals_3D3D[residuals_3D3D.size()/2]
-        << " mean " << std::fixed << std::setprecision(10) << sum_3D3D/residuals_3D3D.size() 
+        << " mean " << std::fixed << std::setprecision(10) << sum_3D3D/residuals_3D3D.size()
         << " count " << residuals_3D3D.size() << std::endl;
     if(residuals_3D2D.size())
     std::cerr << "Residual 3D2D:"
         << " median " << std::fixed << std::setprecision(10) << residuals_3D2D[residuals_3D2D.size()/2]
-        << " mean " << std::fixed << std::setprecision(10) << sum_3D2D/residuals_3D2D.size() 
+        << " mean " << std::fixed << std::setprecision(10) << sum_3D2D/residuals_3D2D.size()
         << " count " << residuals_3D2D.size() << std::endl;
     if(residuals_2D3D.size())
     std::cerr << "Residual 2D3D:"
         << " median " << std::fixed << std::setprecision(10) << residuals_2D3D[residuals_2D3D.size()/2]
-        << " mean " << std::fixed << std::setprecision(10) << sum_2D3D/residuals_2D3D.size() 
+        << " mean " << std::fixed << std::setprecision(10) << sum_2D3D/residuals_2D3D.size()
         << " count " << residuals_2D3D.size() << std::endl;
     if(residuals_2D2D.size())
     std::cerr << "Residual 2D2D:"
         << " median " << std::fixed << std::setprecision(10) << residuals_2D2D[residuals_2D2D.size()/2]
-        << " mean " << std::fixed << std::setprecision(10) << sum_2D2D/residuals_2D2D.size() 
+        << " mean " << std::fixed << std::setprecision(10) << sum_2D2D/residuals_2D2D.size()
         << " count " << residuals_2D2D.size() << std::endl;
 }

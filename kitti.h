@@ -1,33 +1,36 @@
 #pragma once
 
 const int num_cams = 4,
-    corner_count = 10, // number of features per cell
-    row_cells = 5, 
-    col_cells = 20;
+    corner_count = 1000, // number of features per cell
+    row_cells = 1,
+    col_cells = 1,
+    icp_skip = 60;
 
 int img_width = 1226, // kitti data
     img_height = 370,
     cell_width = img_width / col_cells,
-    cell_height = img_height / row_cells,
-    icp_skip = 60;
+    cell_height = img_height / row_cells;
 
 const double PI = 3.1415926535897932384626433832795028,
+    quality_level = 0.005, // good features to track quality
+    min_distance = 10, // pixel distance between nearest features
     weight_3D2D = 10,
     weight_2D2D = 1000,
     loss_thresh_3D2D = 0.01, // reprojection error, canonical camera units
     loss_thresh_2D2D = 0.0001,
+    loss_thresh_3DPD = 0.1, // physical distance, meters
     loss_thresh_3D3D = 0.05, // physical distance, meters
-    match_thresh = 40, // bits, hamming distance for FREAK features
+    match_thresh = 30, // bits, hamming distance for FREAK features
     depth_assoc_thresh = 0.015, // canonical camera units
     z_weight = 0.6,
-    outlier_reject = 5.0,
+    outlier_reject = 7.0,
     correspondence_thresh_icp = 1;
 
-std::vector<Eigen::Matrix<float, 3, 4>, 
+std::vector<Eigen::Matrix<float, 3, 4>,
     Eigen::aligned_allocator<Eigen::Matrix<float, 3, 4>>> cam_mat;
-std::vector<Eigen::Matrix3f, 
+std::vector<Eigen::Matrix3f,
     Eigen::aligned_allocator<Eigen::Matrix3f>> cam_intrinsic;
-std::vector<Eigen::Vector3f, 
+std::vector<Eigen::Vector3f,
     Eigen::aligned_allocator<Eigen::Vector3f>> cam_trans;
 Eigen::Matrix4f velo_to_cam, cam_to_velo;
 std::vector<double> min_x, max_x, min_y, max_y;
@@ -95,12 +98,12 @@ void loadTimes(
 }
 
 void loadPoints(
-        pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, 
+        pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
         std::string dataset,
         int n
         ) {
     std::stringstream ss;
-    ss << kittipath << dataset << "/velodyne/" 
+    ss << kittipath << dataset << "/velodyne/"
         << std::setfill('0') << std::setw(6) << n << ".bin";
     // allocate 40 MB buffer (only ~1300*4*4 KB are needed)
     int32_t num = 10000000;
@@ -166,7 +169,7 @@ cv::Mat loadImage(
         const int n
         ) {
     std::stringstream ss;
-    ss << kittipath << dataset << "/image_" << cam << "/" 
+    ss << kittipath << dataset << "/image_" << cam << "/"
         << std::setfill('0') << std::setw(6) << n << ".png";
     cv::Mat I = cv::imread(ss.str(), 0);
     img_width = I.cols;
@@ -175,7 +178,7 @@ cv::Mat loadImage(
     cell_height = img_height / row_cells;
     return I;
 }
-        
+
 
 void output_line(Eigen::Matrix4d result, std::ofstream &output) {
     output<< result(0,0) << " "

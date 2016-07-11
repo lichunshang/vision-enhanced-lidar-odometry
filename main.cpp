@@ -37,7 +37,7 @@
 #define VISUALIZE
 
 int main(int argc, char** argv) {
-    cv::setUseOptimized(true); 
+    cv::setUseOptimized(true);
     if(argc < 2) {
         std::cout << "Usage: velo kittidatasetnumber. e.g. velo 00" << std::endl;
         return 1;
@@ -63,7 +63,11 @@ int main(int argc, char** argv) {
     int num_frames = times.size();
 
     cv::Ptr<cv::xfeatures2d::FREAK> freak = cv::xfeatures2d::FREAK::create();
-    cv::Ptr<cv::GFTTDetector> gftt = cv::GFTTDetector::create(corner_count, 0.01, 3);
+    cv::Ptr<cv::GFTTDetector> gftt = cv::GFTTDetector::create(
+            corner_count,
+            quality_level,
+            min_distance);
+
 
     std::vector<std::vector<std::vector<cv::Point2f>>> keypoints(num_cams,
             std::vector<std::vector<cv::Point2f>>(num_frames));
@@ -113,10 +117,10 @@ int main(int argc, char** argv) {
             projectLidarToCamera(scans, projection, scans_valid, cam);
 
             //auto c = clock()/double(CLOCKS_PER_SEC);
-            kp_with_depth[cam][frame] = 
+            kp_with_depth[cam][frame] =
                 pcl::PointCloud<pcl::PointXYZ>::Ptr(
                         new pcl::PointCloud<pcl::PointXYZ>);
-            has_depth[cam][frame] = 
+            has_depth[cam][frame] =
                 featureDepthAssociation(scans_valid,
                     projection,
                     keypoints[cam][frame],
@@ -139,7 +143,7 @@ int main(int argc, char** argv) {
                     transform,
                     good_matches);
             double end = clock()/double(CLOCKS_PER_SEC);
-            std::cerr << "Frame (" << dataset << "):" 
+            std::cerr << "Frame (" << dataset << "):"
                 << std::setw(5) << frame+1 << "/" << num_frames << ", "
                 << std::fixed << std::setprecision(3) <<  end-start << " |";
             for(int j=0; j<6; j++) {
@@ -167,7 +171,7 @@ int main(int argc, char** argv) {
                     cv::circle(draw, pp, 3, cv::Scalar(255, 200, 0), -1, 8, 0);
                 }
             }
-            
+
             /*
             for(int s=0, _s = projection.size(); s<_s; s++) {
                 auto P = projection[s];
@@ -176,7 +180,7 @@ int main(int argc, char** argv) {
                     pe << p.x, p.y, 1;
                     pe = cam_intrinsic[cam] * pe;
                     cv::Point2f pp(pe(0)/pe(2), pe(1)/pe(2));
-                    cv::circle(draw, pp, 1, 
+                    cv::circle(draw, pp, 1,
                             cv::Scalar(0, 128, 0), -1, 8, 0);
                 }
             }
