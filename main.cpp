@@ -18,6 +18,10 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/highgui.hpp>
 
+#include <opencv2/core/cuda.hpp>
+#include <opencv2/cudaimgproc.hpp>
+#include <opencv2/cudafeatures2d.hpp>
+
 #include <pcl/io/pcd_io.h>
 #include <pcl/point_types.h>
 
@@ -34,10 +38,13 @@
 #include "costfunctions.h"
 #include "velo.h"
 
-#define VISUALIZE
+//#define VISUALIZE
 
 int main(int argc, char** argv) {
     cv::setUseOptimized(true);
+
+    cv::cuda::setDevice(1);
+    cv::cuda::printCudaDeviceInfo(cv::cuda::getDevice());
     if(argc < 2) {
         std::cout << "Usage: velo kittidatasetnumber. e.g. velo 00" << std::endl;
         return 1;

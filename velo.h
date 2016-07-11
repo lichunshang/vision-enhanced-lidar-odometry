@@ -223,29 +223,28 @@ void matchFeatures(
         const int cam2,
         std::vector<std::pair<int, int>> &matches
         ) {
-    cv::BFMatcher matcher(cv::NORM_HAMMING);
+    //cv::BFMatcher matcher(cv::NORM_HAMMING);
     //double start = clock()/double(CLOCKS_PER_SEC);
+    //std::cerr << "Matching: ";
     std::vector<cv::DMatch> mc;
+    /*
     matcher.match(
             descriptors[cam1][frame1],
             descriptors[cam2][frame2], mc);
-    /*
+            */
     cv::Ptr<cv::cuda::DescriptorMatcher> d_matcher =
         cv::cuda::DescriptorMatcher::createBFMatcher(cv::NORM_HAMMING);
-    const cv::cuda::GpuMat d_query(descriptors[cam][frame1]);
-    const cv::cuda::GpuMat d_train(descriptors[cam][frame2]);
+    cv::cuda::GpuMat d_query(descriptors[cam1][frame1]);
+    cv::cuda::GpuMat d_train(descriptors[cam2][frame2]);
     cv::cuda::GpuMat d_matches;
     d_matcher->matchAsync(d_query, d_train, d_matches);
 
-    d_matcher->matchConvert(d_matches, matches[cam]);
-    */
+    d_matcher->matchConvert(d_matches, mc);
 
-    /*
-    double end = clock()/double(CLOCKS_PER_SEC);
-    std::cerr << "Matching: " << descriptors[cam][frame1].size()
-        << ", " << descriptors[cam][frame2].size()
-        << "; " << end-start << std::endl;
-        */
+    //double end = clock()/double(CLOCKS_PER_SEC);
+    //std::cerr << descriptors[cam1][frame1].size()
+        //<< ", " << descriptors[cam2][frame2].size()
+        //<< "; " << end-start << std::endl;
     // find minimum matching distance and filter out the ones more than twice as big as it
     double min_dist = 1e9, max_dist = 0;
     for(int i=0; i<mc.size(); i++) {
