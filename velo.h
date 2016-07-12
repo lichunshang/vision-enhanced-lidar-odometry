@@ -255,7 +255,7 @@ void matchFeatures(
         //<< " " << min_dist << " " << max_dist
         //<< std::endl;
     for(int i=0; i<mc.size(); i++) {
-        if(mc[i].distance > std::max(2*min_dist, match_thresh)) continue;
+        if(mc[i].distance > std::max(1.5*min_dist, match_thresh)) continue;
         matches.push_back(std::make_pair(mc[i].queryIdx, mc[i].trainIdx));
     }
 }
@@ -270,16 +270,19 @@ Eigen::Matrix4d frameToFrame(
         const std::vector<std::vector<cv::Mat>> &descriptors,
         const std::vector<std::vector<std::vector<cv::Point2f>>> &keypoints,
         const std::vector<std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>> &keypoints_with_depth,
-        const std::vector<std::vector<std::vector<int>>> has_depth,
-        const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans_M,
-        const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans_S,
+        const std::vector<std::vector<std::vector<int>>> &has_depth,
+        const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> &scans_M,
+        const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> &scans_S,
+        const std::vector<pcl::KdTreeFLANN<pcl::PointXYZ>> &kd_trees,
         const int frame1,
         const int frame2,
         double transform[6],
         std::vector<std::vector<std::pair<int, int>>> &good_matches
         ) {
 
-    ceres::Problem problem;
+    ceres::Problem::Options problem_options;
+    problem_options.enable_fast_removal = true;
+    ceres::Problem problem(problem_options);
 
     std::vector<std::vector<ResidualType>> residual_type(num_cams);
 
@@ -440,103 +443,109 @@ Eigen::Matrix4d frameToFrame(
     }
 
     // Point set registration
-    std::vector<pcl::KdTreeFLANN<pcl::PointXYZ>> kd_trees(scans_S.size());
-    for(int s=0; s<scans_S.size(); s++) {
-        kd_trees[s].setInputCloud(scans_S[s]);
-    }
+    std::vector<ceres::ResidualBlockId> icp_blocks;
 
-    for(int sm = 0; sm < scans_M.size(); sm++) {
-        for(int smi = 0; smi < scans_M[sm]->size(); smi+= icp_skip) {
-            pcl::PointXYZ pointM = scans_M[sm]->at(smi);
-            pcl::PointXYZ pointM_untransformed = pointM;
-            util::transform_point(pointM, transform);
-            /*
-             Point-to-plane ICP where plane is defined by
-             three Nearest Points (np):
-                        np_i     np_k
-             np_s_i ..... * ..... * .....
-                           \     /
-                            \   /
-                             \ /
-             np_s_j ......... * .......
-                            np_j
-             */
-            int np_i = 0, np_j = 0, np_k = 0;
-            int np_s_i = -1, np_s_j = -1;
-            double np_dist_i = INF, np_dist_j = INF;
-            for(int ss = 0; ss < scans_S.size(); ss++) {
-                std::vector<int> id(1);
-                std::vector<float> dist2(1);
-                if(kd_trees[ss].nearestKSearch(pointM, 1, id, dist2) <= 0 ||
-                        dist2[0] > correspondence_thresh_icp) {
+    for(int icp_iter = 0; icp_iter < icp_iterations; icp_iter++) {
+        while(icp_blocks.size() > 0) {
+            auto bid = icp_blocks.back();
+            icp_blocks.pop_back();
+            problem.RemoveResidualBlock(bid);
+        }
+        for(int sm = 0; sm < scans_M.size(); sm++) {
+            for(int smi = 0; smi < scans_M[sm]->size(); smi+= icp_skip) {
+                pcl::PointXYZ pointM = scans_M[sm]->at(smi);
+                pcl::PointXYZ pointM_untransformed = pointM;
+                util::transform_point(pointM, transform);
+                /*
+                 Point-to-plane ICP where plane is defined by
+                 three Nearest Points (np):
+                            np_i     np_k
+                 np_s_i ..... * ..... * .....
+                               \     /
+                                \   /
+                                 \ /
+                 np_s_j ......... * .......
+                                np_j
+                 */
+                int np_i = 0, np_j = 0, np_k = 0;
+                int np_s_i = -1, np_s_j = -1;
+                double np_dist_i = INF, np_dist_j = INF;
+                for(int ss = 0; ss < kd_trees.size(); ss++) {
+                    std::vector<int> id(1);
+                    std::vector<float> dist2(1);
+                    if(kd_trees[ss].nearestKSearch(pointM, 1, id, dist2) <= 0 ||
+                            dist2[0] > correspondence_thresh_icp) {
+                        continue;
+                    }
+                    pcl::PointXYZ np = scans_S[ss]->at(id[0]);
+
+                    util::subtract_assign(np, pointM);
+                    double d = util::norm2(np);
+                    if(d < np_dist_i) {
+                        np_dist_j = np_dist_i;
+                        np_j = np_i;
+                        np_s_j = np_s_i;
+                        np_dist_i = d;
+                        np_i = id[0];
+                        np_s_i = ss;
+                    } else if(d < np_dist_j) {
+                        np_dist_j = d;
+                        np_j = id[0];
+                        np_s_j = ss;
+                    }
+                }
+                if(np_s_i == -1 || np_s_j == -1) {
                     continue;
                 }
-                pcl::PointXYZ np = scans_S[ss]->at(id[0]);
-
-                util::subtract_assign(np, pointM);
-                double d = util::norm2(np);
-                if(d < np_dist_i) {
-                    np_dist_j = np_dist_i;
-                    np_j = np_i;
-                    np_s_j = np_s_i;
-                    np_dist_i = d;
-                    np_i = id[0];
-                    np_s_i = ss;
-                } else if(d < np_dist_j) {
-                    np_dist_j = d;
-                    np_j = id[0];
-                    np_s_j = ss;
+                int np_k_n = scans_S[np_s_i]->size(),
+                    np_k_1p = (np_i+1) % np_k_n,
+                    np_k_2p = (np_i-1 + np_k_n) % np_k_n;
+                pcl::PointXYZ np_k_1 = scans_S[np_s_i]->at(np_k_1p),
+                              np_k_2 = scans_S[np_s_i]->at(np_k_2p);
+                util::subtract_assign(np_k_1, pointM);
+                util::subtract_assign(np_k_2, pointM);
+                if(util::norm2(np_k_1) < util::norm2(np_k_2)) {
+                    np_k = np_k_1p;
+                } else {
+                    np_k = np_k_2p;
                 }
+                pcl::PointXYZ s0, s1, s2;
+                s0 = scans_S[np_s_i]->at(np_i);
+                s1 = scans_S[np_s_j]->at(np_j);
+                s2 = scans_S[np_s_i]->at(np_k);
+                Eigen::Vector3f
+                    v0 = s0.getVector3fMap(),
+                    v1 = s1.getVector3fMap(),
+                    v2 = s2.getVector3fMap();
+                Eigen::Vector3f N = (v1 - v0).cross(v2 - v0);
+                if(N.norm() < icp_norm_condition) continue;
+                N /= N.norm();
+                ceres::CostFunction* cost_function =
+                    new ceres::AutoDiffCostFunction<cost3DPD, 1, 6>(
+                            new cost3DPD(
+                                pointM_untransformed.x,
+                                pointM_untransformed.y,
+                                pointM_untransformed.z,
+                                N[0], N[1], N[2],
+                                v0[0], v0[1], v0[2]
+                                )
+                            );
+                auto bid = problem.AddResidualBlock(
+                        cost_function,
+                        new ceres::CauchyLoss(loss_thresh_3DPD),
+                        transform);
+                icp_blocks.push_back(bid);
             }
-            if(np_s_i == -1 || np_s_j == -1) {
-                continue;
-            }
-            int np_k_n = scans_S[np_s_i]->size(),
-                np_k_1p = (np_i+1) % np_k_n,
-                np_k_2p = (np_i-1 + np_k_n) % np_k_n;
-            pcl::PointXYZ np_k_1 = scans_S[np_s_i]->at(np_k_1p),
-                          np_k_2 = scans_S[np_s_i]->at(np_k_2p);
-            util::subtract_assign(np_k_1, pointM);
-            util::subtract_assign(np_k_2, pointM);
-            if(util::norm2(np_k_1) < util::norm2(np_k_2)) {
-                np_k = np_k_1p;
-            } else {
-                np_k = np_k_2p;
-            }
-            pcl::PointXYZ s0, s1, s2;
-            s0 = scans_S[np_s_i]->at(np_i);
-            s1 = scans_S[np_s_j]->at(np_j);
-            s2 = scans_S[np_s_i]->at(np_k);
-            Eigen::Vector3f
-                v0 = s0.getVector3fMap(),
-                v1 = s1.getVector3fMap(),
-                v2 = s2.getVector3fMap();
-            Eigen::Vector3f N = (v1 - v0).cross(v2 - v0);
-            N /= N.norm();
-            ceres::CostFunction* cost_function =
-                new ceres::AutoDiffCostFunction<cost3DPD, 1, 6>(
-                        new cost3DPD(
-                            pointM_untransformed.x,
-                            pointM_untransformed.y,
-                            pointM_untransformed.z,
-                            N[0], N[1], N[2],
-                            v0[0], v0[1], v0[2]
-                            )
-                        );
-            problem.AddResidualBlock(
-                    cost_function,
-                    new ceres::CauchyLoss(loss_thresh_3DPD),
-                    transform);
         }
+        //residualStats(problem, good_matches, residual_type);
+        ceres::Solver::Options options;
+        options.linear_solver_type = ceres::DENSE_SCHUR;
+        options.minimizer_progress_to_stdout = false;
+        options.num_threads = 1;
+        ceres::Solver::Summary summary;
+        ceres::Solve(options, &problem, &summary);
     }
     //residualStats(problem, good_matches, residual_type);
-    ceres::Solver::Options options;
-    options.linear_solver_type = ceres::DENSE_SCHUR;
-    options.minimizer_progress_to_stdout = false;
-    options.num_threads = 1;
-    ceres::Solver::Summary summary;
-    ceres::Solve(options, &problem, &summary);
-    residualStats(problem, good_matches, residual_type);
 
     /*
     for(int i=0; i<6; i++) {
@@ -558,7 +567,7 @@ void residualStats(
     ceres::Problem::EvaluateOptions evaluate_options;
     evaluate_options.apply_loss_function = false;
     problem.Evaluate(evaluate_options, &cost, &residuals, NULL, NULL);
-    std::vector<double> residuals_3D3D, residuals_3D2D, residuals_2D3D, residuals_2D2D;
+    std::vector<double> residuals_3D3D, residuals_3D2D, residuals_2D3D, residuals_2D2D, residuals_3DPD;
     int ri = 0;
     for(int cam = 0; cam < num_cams; cam++) {
         auto &mc = good_matches[cam];
@@ -600,15 +609,20 @@ void residualStats(
             }
         }
     }
-    double sum_3D3D = 0, sum_3D2D = 0, sum_2D3D = 0, sum_2D2D = 0;
+    for(; ri < residuals.size(); ri++) {
+        residuals_3DPD.push_back(abs(residuals[ri]));
+    }
+    double sum_3D3D = 0, sum_3D2D = 0, sum_2D3D = 0, sum_2D2D = 0, sum_3DPD = 0;
     for(auto r : residuals_3D3D) {sum_3D3D += r;}
     for(auto r : residuals_3D2D) {sum_3D2D += r;}
     for(auto r : residuals_2D3D) {sum_2D3D += r;}
     for(auto r : residuals_2D2D) {sum_2D2D += r;}
+    for(auto r : residuals_3DPD) {sum_3DPD += r;}
     std::sort(residuals_3D3D.begin(), residuals_3D3D.end());
     std::sort(residuals_3D2D.begin(), residuals_3D2D.end());
     std::sort(residuals_2D3D.begin(), residuals_2D3D.end());
     std::sort(residuals_2D2D.begin(), residuals_2D2D.end());
+    std::sort(residuals_3DPD.begin(), residuals_3DPD.end());
     std::cerr << "Cost: " << cost
         << " Residual blocks: " << problem.NumResidualBlocks()
         << " Residuals: " << problem.NumResiduals() << " " << ri << " " << residuals.size()
@@ -643,4 +657,9 @@ void residualStats(
         << " median " << std::fixed << std::setprecision(10) << residuals_2D2D[residuals_2D2D.size()/2]
         << " mean " << std::fixed << std::setprecision(10) << sum_2D2D/residuals_2D2D.size()
         << " count " << residuals_2D2D.size() << std::endl;
+    if(residuals_3DPD.size())
+    std::cerr << "Residual 3DPD:"
+        << " median " << std::fixed << std::setprecision(10) << residuals_3DPD[residuals_3DPD.size()/2]
+        << " mean " << std::fixed << std::setprecision(10) << sum_3DPD/residuals_3DPD.size()
+        << " count " << residuals_3DPD.size() << std::endl;
 }

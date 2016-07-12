@@ -7,6 +7,8 @@
 #include <sstream>
 #include <iomanip>
 #include <cmath>
+#include <list>
+#include <unordered_map>
 
 #include <Eigen/StdVector>
 #include <Eigen/Dense>
@@ -33,10 +35,14 @@
 #include <glog/logging.h>
 #include <gflags/gflags.h>
 
+#include <isam/isam.h>
+#include <isam/robust.h>
+
 #include "utility.h"
 #include "kitti.h"
 #include "costfunctions.h"
 #include "velo.h"
+#include "lru.h"
 
 //#define VISUALIZE
 
@@ -44,7 +50,7 @@ int main(int argc, char** argv) {
     cv::setUseOptimized(true);
 
     cv::cuda::setDevice(1);
-    cv::cuda::printCudaDeviceInfo(cv::cuda::getDevice());
+    //cv::cuda::printCudaDeviceInfo(cv::cuda::getDevice());
     if(argc < 2) {
         std::cout << "Usage: velo kittidatasetnumber. e.g. velo 00" << std::endl;
         return 1;
@@ -57,8 +63,8 @@ int main(int argc, char** argv) {
     loadTimes(dataset);
 
     for(int i=0; i<num_cams; i++) {
-        std::cerr << cam_mat[i] << std::endl;
-        std::cerr << cam_intrinsic[i] << std::endl;
+        //std::cerr << cam_mat[i] << std::endl;
+        //std::cerr << cam_intrinsic[i] << std::endl;
         //std::cerr << cam_trans[i] << std::endl;
         //std::cerr << min_x[i] << " " << min_y[i] << " " << max_x[i] << " " << max_y[i] << " " << std::endl;
     }
@@ -93,24 +99,16 @@ int main(int argc, char** argv) {
 
     Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
     double transform[6] = {0, 0, 0, 0, 0, 0.5};
-    std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans_prev;
+    ScansLRU lru;
 
     for(int frame = 0; frame < num_frames; frame++) {
         auto start = clock()/double(CLOCKS_PER_SEC);
 
-        pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(
-                new pcl::PointCloud<pcl::PointXYZ>);
-        loadPoints(cloud, dataset, frame);
-
-        std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans;
-        segmentPoints(cloud, scans);
-        if(scans.size() != 64) {
-            std::cerr << "Scan " << frame << " has " << scans.size() << std::endl;
-        }
+        ScanData *sd = lru.get(dataset, frame);
+        const auto &scans = sd->scans;
         for(int cam = 0; cam<num_cams; cam++) {
             cv::Mat img = loadImage(dataset, cam, frame);
 
-            //auto a = clock()/double(CLOCKS_PER_SEC);
             detectFeatures(keypoints[cam][frame],
                     descriptors[cam][frame],
                     gftt,
@@ -118,12 +116,10 @@ int main(int argc, char** argv) {
                     img,
                     cam);
 
-            //auto b = clock()/double(CLOCKS_PER_SEC);
             std::vector<std::vector<cv::Point2f>> projection;
             std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans_valid;
             projectLidarToCamera(scans, projection, scans_valid, cam);
 
-            //auto c = clock()/double(CLOCKS_PER_SEC);
             kp_with_depth[cam][frame] =
                 pcl::PointCloud<pcl::PointXYZ>::Ptr(
                         new pcl::PointCloud<pcl::PointXYZ>);
@@ -132,12 +128,13 @@ int main(int argc, char** argv) {
                     projection,
                     keypoints[cam][frame],
                     kp_with_depth[cam][frame]);
-            //auto d = clock()/double(CLOCKS_PER_SEC);
-            //std::cerr << "clock (" << cam << "): " << a << " " << b << " " << c << " " << d << std::endl;
         }
 
         if(frame > 0) {
             std::vector<std::vector<std::pair<int, int>>> good_matches(num_cams);
+            ScanData *sd_prev = lru.get(dataset, frame);
+            const auto &scans_prev = sd_prev->scans;
+            const auto &trees = sd_prev->trees;
             pose *= frameToFrame(
                     descriptors,
                     keypoints,
@@ -145,6 +142,7 @@ int main(int argc, char** argv) {
                     has_depth,
                     scans,
                     scans_prev,
+                    trees,
                     frame,
                     frame-1,
                     transform,
@@ -204,15 +202,13 @@ int main(int argc, char** argv) {
                 cv::Point2f pp1(pe1(0)/pe1(2), pe1(1)/pe1(2));
                 cv::Point2f pp2(pe2(0)/pe2(2), pe2(1)/pe2(2));
                 cv::arrowedLine(draw, pp1, pp2,
-                        cv::Scalar(0, 200, 255));
+                        cv::Scalar(0, 255, 0));
             }
             cv::imshow(video, draw);
             cvWaitKey(1);
 #endif
         }
-        scans_prev = scans;
         output_line(pose, output);
-
     }
     return 0;
 }

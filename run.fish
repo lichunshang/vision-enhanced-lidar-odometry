@@ -1,4 +1,2 @@
 #!/usr/bin/fish
-for f in ~/kitti/dataset/sequences/*
-    ./main (basename $f) &
-end
+parallel ./main ::: (ls ~/kitti/dataset/sequences/)

@@ -4,7 +4,8 @@ const int num_cams = 4,
     corner_count = 1000, // number of features per cell
     row_cells = 1,
     col_cells = 1,
-    icp_skip = 60;
+    icp_skip = 100,
+    icp_iterations = 5;
 
 int img_width = 1226, // kitti data
     img_height = 370,
@@ -16,6 +17,7 @@ const double PI = 3.1415926535897932384626433832795028,
     min_distance = 10, // pixel distance between nearest features
     weight_3D2D = 10,
     weight_2D2D = 1000,
+    weight_3DPD = 0.1, // there are more of them
     loss_thresh_3D2D = 0.01, // reprojection error, canonical camera units
     loss_thresh_2D2D = 0.0001,
     loss_thresh_3DPD = 0.1, // physical distance, meters
@@ -24,7 +26,8 @@ const double PI = 3.1415926535897932384626433832795028,
     depth_assoc_thresh = 0.015, // canonical camera units
     z_weight = 0.6,
     outlier_reject = 7.0,
-    correspondence_thresh_icp = 1;
+    correspondence_thresh_icp = 1,
+    icp_norm_condition = 1e-5;
 
 std::vector<Eigen::Matrix<float, 3, 4>,
     Eigen::aligned_allocator<Eigen::Matrix<float, 3, 4>>> cam_mat;
