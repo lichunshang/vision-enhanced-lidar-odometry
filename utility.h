@@ -48,6 +48,9 @@ class util {
     static inline double norm2(const pcl::PointXYZ &p) {
         return p.x*p.x + p.y*p.y + p.z*p.z;
     }
+    static inline double dist2(const cv::Point2f &a, const cv::Point2f &b) {
+        return (a.x-b.x)*(a.x-b.x) + (a.y-b.y)*(a.y-b.y);
+    }
     static void save_cloud_txt(std::string s, pcl::PointCloud<pcl::PointXYZ>::Ptr cloud) {
         std::ofstream fout;
         fout.open(s.c_str());

@@ -7,43 +7,145 @@ enum ResidualType {
     RESIDUAL_2D2D
 };
 
-void detectFeatures(
-        std::vector<cv::Point2f> &keypoints,
-        cv::Mat &descriptors,
+cv::Point2f pixel2canonical(
+        const cv::Point2f &pp,
+        const Eigen::Matrix3f &Kinv) {
+    Eigen::Vector3f p;
+    p << pp.x, pp.y, 1;
+    p = Kinv * p;
+    return cv::Point2f(p(0)/p(2), p(1)/p(2));
+}
+
+void trackAndDetectFeatures(
+        std::vector<std::vector<cv::Point2f>> &keypoints,
+        std::vector<std::vector<cv::Point2f>> &keypoints_p,
+        std::vector<std::vector<int>> &keypoint_ids,
+        std::vector<cv::Mat> &descriptors,
         const cv::Ptr<cv::FeatureDetector> detector,
         const cv::Ptr<cv::DescriptorExtractor> extractor,
-        cv::Mat &img,
-        const int which_cam
+        cv::Mat &img1,
+        cv::Mat &img2,
+        int &id_counter,
+        const int which_cam,
+        const int frame
         ) {
     Eigen::Matrix3f Kinv = cam_intrinsic[which_cam].inverse();
-    std::vector<cv::KeyPoint> cvKP;
-    if (row_cells > 1 || col_cells > 1) {
-        for(int row=0; row < row_cells; row++) {
-            for(int col = 0; col < col_cells; col++) {
-                cv::Mat img_cell = img(
-                    cv::Range(cell_height * row, cell_height * (row + 1)),
-                    cv::Range(cell_width * col, cell_width * (col + 1))
+    if(frame > 0) {
+        int m = keypoints[frame-1].size();
+        if(m == 0) {
+            std::cerr << "WARNING: No features to track." << std::endl;
+        }
+        std::vector<cv::Point2f> points1(m), points2(m);
+        for(int i=0; i<m; i++) {
+            points1[i] = keypoints_p[frame-1][i];
+        }
+        std::vector<unsigned char> status;
+        std::vector<float> err;
+        cv::calcOpticalFlowPyrLK(
+                img1,
+                img2,
+                points1,
+                points2,
+                status,
+                err,
+                cv::Size(lkt_window, lkt_window),
+                3,
+                cvTermCriteria(
+                    CV_TERMCRIT_ITER | CV_TERMCRIT_EPS,
+                    20,
+                    0.05
+                    ),
+                0
                 );
-                std::vector<cv::KeyPoint> temp_keypoints;
-                detector->detect(img_cell, temp_keypoints);
-                for(auto kp : temp_keypoints) {
-                    kp.pt.x += cell_width * col;
-                    kp.pt.y += cell_height * row;
-                    cvKP.push_back(kp);
+        int col_cells = img_width / min_distance + 2,
+            row_cells = img_height / min_distance + 2;
+        std::vector<std::vector<cv::Point2f>> occupied(col_cells * row_cells);
+        for(int i=0; i<m; i++) {
+            if(status[i]) {
+                if(util::dist2(
+                            points1[i], 
+                            points2[i]
+                            ) > flow_outlier) {
+                    continue;
                 }
+                int col = points2[i].x / min_distance,
+                    row = points2[i].y / min_distance;
+                bool bad = false;
+                int col_start = std::max(col-1, 0),
+                    col_end = std::min(col+1, col_cells-1),
+                    row_start = std::max(row-1, 0),
+                    row_end = std::min(row+1, row_cells-1);
+                float md2 = min_distance * min_distance;
+                for(int c=col_start; c<=col_end && !bad; c++) {
+                    for(int r=row_start; r<=row_end && !bad; r++) {
+                        for(auto pp : occupied[c * row_cells + r]) {
+                            if(util::dist2(pp, points2[i]) < md2) {
+                                bad = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if(bad) continue;
+                occupied[col * row_cells + row].push_back(points2[i]);
+                keypoints_p[frame].push_back(points2[i]);
+                keypoints[frame].push_back(
+                        pixel2canonical(points2[i], Kinv)
+                        );
+                keypoint_ids[frame].push_back(
+                        keypoint_ids[frame-1][i]);
+                descriptors[frame].push_back(
+                        descriptors[frame-1].row(i).clone()
+                        );
             }
         }
-    } else {
-        detector->detect(img, cvKP);
     }
-    // remember! compute MUTATES cvKP
-    extractor->compute(img, cvKP, descriptors);
-    for(auto kp : cvKP) {
-        Eigen::Vector3f p;
-        p << kp.pt.x,
-            kp.pt.y, 1;
-        p = Kinv * p;
-        keypoints.push_back(cv::Point2f(p(0)/p(2), p(1)/p(2)));
+
+    if(frame < 0 || frame % detect_every == 0) {
+        int col_cells = img_width / min_distance + 2,
+            row_cells = img_height / min_distance + 2;
+        std::vector<std::vector<cv::Point2f>> occupied(col_cells * row_cells);
+        for(cv::Point2f p : keypoints_p[frame]) {
+            int col = p.x / min_distance,
+                row = p.y / min_distance;
+            occupied[col * row_cells + row].push_back(p);
+        }
+        std::vector<cv::KeyPoint> cvKP;
+        detector->detect(img2, cvKP);
+        cv::Mat tmp_descriptors;
+        // remember! compute MUTATES cvKP
+        extractor->compute(img2, cvKP, tmp_descriptors);
+        int detected = 0;
+        for(int kp_i = 0; kp_i < cvKP.size(); kp_i ++) {
+            auto kp = cvKP[kp_i];
+            int col = kp.pt.x / min_distance,
+                row = kp.pt.y / min_distance;
+            bool bad = false;
+            int col_start = std::max(col-1, 0),
+                col_end = std::min(col+1, col_cells-1),
+                row_start = std::max(row-1, 0),
+                row_end = std::min(row+1, row_cells-1);
+            float md2 = min_distance * min_distance;
+            for(int c=col_start; c<=col_end && !bad; c++) {
+                for(int r=row_start; r<=row_end && !bad; r++) {
+                    for(auto pp : occupied[c * row_cells + r]) {
+                        if(util::dist2(pp, kp.pt) < md2) {
+                            bad = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if(bad) continue;
+            keypoints_p[frame].push_back(kp.pt);
+            keypoints[frame].push_back(
+                    pixel2canonical(kp.pt, Kinv)
+                    );
+            descriptors[frame].push_back(tmp_descriptors.row(kp_i).clone());
+            keypoint_ids[frame].push_back(id_counter++);
+            detected++;
+        }
+        //std::cerr << "Detected: " << detected << std::endl;
     }
 }
 
@@ -260,6 +362,26 @@ void matchFeatures(
     }
 }
 
+void matchUsingId(
+        const std::vector<std::vector<std::vector<int>>> &keypoint_ids,
+        const int frame1,
+        const int frame2,
+        std::vector<std::vector<std::pair<int, int>>> &matches
+        ) {
+    for(int cam=0; cam<num_cams; cam++) {
+        std::map<int, int> id2ind;
+        for(int ind = 0; ind < keypoint_ids[cam][frame1].size(); ind++) {
+            int id = keypoint_ids[cam][frame1][ind];
+            id2ind[id] = ind;
+        }
+        for(int ind = 0; ind < keypoint_ids[cam][frame2].size(); ind++) {
+            int id = keypoint_ids[cam][frame2][ind];
+            if(id2ind.count(id))
+                matches[cam].push_back(std::make_pair(id2ind[id], ind));
+        }
+    }
+}
+
 void residualStats(
         ceres::Problem &problem,
         std::vector<std::vector<std::pair<int, int>>> &good_matches,
@@ -267,7 +389,7 @@ void residualStats(
         );
 
 Eigen::Matrix4d frameToFrame(
-        const std::vector<std::vector<cv::Mat>> &descriptors,
+        const std::vector<std::vector<std::pair<int, int>>> &matches,
         const std::vector<std::vector<std::vector<cv::Point2f>>> &keypoints,
         const std::vector<std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>> &keypoints_with_depth,
         const std::vector<std::vector<std::vector<int>>> &has_depth,
@@ -280,6 +402,7 @@ Eigen::Matrix4d frameToFrame(
         std::vector<std::vector<std::pair<int, int>>> &good_matches
         ) {
 
+    for(int iter = 1; iter <= icp_iterations; iter++) {
     ceres::Problem::Options problem_options;
     problem_options.enable_fast_removal = true;
     ceres::Problem problem(problem_options);
@@ -288,8 +411,8 @@ Eigen::Matrix4d frameToFrame(
 
     // Visual odometry
     for(int cam = 0; cam<num_cams; cam++) {
-        std::vector<std::pair<int, int>> mc;
-        matchFeatures(descriptors, frame1, frame2, cam, cam, mc);
+        good_matches[cam].clear();
+        const std::vector<std::pair<int, int>> &mc = matches[cam];
         for(int i=0; i<mc.size(); i++) {
             int point1 = mc[i].first,
                 point2 = mc[i].second;
@@ -315,13 +438,13 @@ Eigen::Matrix4d frameToFrame(
                                 );
                 double residual_test[3];
                 (*cost)(transform, residual_test);
-                if(
+                if(iter > 1 &&
                         residual_test[0] * residual_test[0] +
                         residual_test[1] * residual_test[1] +
                         residual_test[2] * residual_test[2]
                         >
-                        loss_thresh_3D3D*outlier_reject *
-                        loss_thresh_3D3D*outlier_reject) {
+                        loss_thresh_3D3D*outlier_reject/iter *
+                        loss_thresh_3D3D*outlier_reject/iter) {
                     continue;
                 }
                 ceres::CostFunction* cost_function =
@@ -337,6 +460,7 @@ Eigen::Matrix4d frameToFrame(
             } else if(has_depth[cam][frame1][point1] == -1
                     && has_depth[cam][frame2][point2] == -1) {
                 // 2D 2D
+#ifdef ENABLE_2D2D
                 const auto pointM = keypoints[cam][frame1][point1];
                 const auto pointS = keypoints[cam][frame2][point2];
                 cost2D2D *cost =
@@ -351,7 +475,7 @@ Eigen::Matrix4d frameToFrame(
                             );
                 double residual_test[1];
                 (*cost)(transform, residual_test);
-                if(residual_test[0] > loss_thresh_2D2D*outlier_reject) continue;
+                if(iter > 1 && abs(residual_test[0]) > loss_thresh_2D2D*outlier_reject/iter) continue;
                 ceres::CostFunction* cost_function =
                     new ceres::AutoDiffCostFunction<cost2D2D,1,6>(cost);
                 problem.AddResidualBlock(
@@ -363,6 +487,7 @@ Eigen::Matrix4d frameToFrame(
                         transform);
                 residual_type[cam].push_back(RESIDUAL_2D2D);
                 good_matches[cam].push_back(std::make_pair(point1, point2));
+#endif
             }
             if(has_depth[cam][frame1][point1] != -1
                     /*&& has_depth[cam][frame2][point2] == -1*/) {
@@ -384,10 +509,10 @@ Eigen::Matrix4d frameToFrame(
                             );
                 double residual_test[2];
                 (*cost)(transform, residual_test);
-                if(residual_test[0] * residual_test[0] +
+                if(iter > 1 && residual_test[0] * residual_test[0] +
                         residual_test[1] * residual_test[1]
-                        > loss_thresh_3D2D*outlier_reject
-                        * loss_thresh_3D2D*outlier_reject) continue;
+                        > loss_thresh_3D2D*outlier_reject/iter
+                        * loss_thresh_3D2D*outlier_reject/iter) continue;
 
                 ceres::CostFunction* cost_function =
                     new ceres::AutoDiffCostFunction<cost3D2D,2,6>(cost);
@@ -421,10 +546,10 @@ Eigen::Matrix4d frameToFrame(
                             );
                 double residual_test[2];
                 (*cost)(transform, residual_test);
-                if(residual_test[0] * residual_test[0] +
+                if(iter > 1 && residual_test[0] * residual_test[0] +
                         residual_test[1] * residual_test[1]
-                        > loss_thresh_3D2D*outlier_reject
-                        * loss_thresh_3D2D*outlier_reject) continue;
+                        > loss_thresh_3D2D*outlier_reject/iter
+                        * loss_thresh_3D2D*outlier_reject/iter) continue;
 
                 ceres::CostFunction* cost_function =
                     new ceres::AutoDiffCostFunction<cost2D3D,2,6>(cost);
@@ -443,14 +568,16 @@ Eigen::Matrix4d frameToFrame(
     }
 
     // Point set registration
+#ifdef ENABLE_ICP
+    /*
     std::vector<ceres::ResidualBlockId> icp_blocks;
 
-    for(int icp_iter = 0; icp_iter < icp_iterations; icp_iter++) {
         while(icp_blocks.size() > 0) {
             auto bid = icp_blocks.back();
             icp_blocks.pop_back();
             problem.RemoveResidualBlock(bid);
         }
+        */
         for(int sm = 0; sm < scans_M.size(); sm++) {
             for(int smi = 0; smi < scans_M[sm]->size(); smi+= icp_skip) {
                 pcl::PointXYZ pointM = scans_M[sm]->at(smi);
@@ -474,7 +601,7 @@ Eigen::Matrix4d frameToFrame(
                     std::vector<int> id(1);
                     std::vector<float> dist2(1);
                     if(kd_trees[ss].nearestKSearch(pointM, 1, id, dist2) <= 0 ||
-                            dist2[0] > correspondence_thresh_icp) {
+                            dist2[0] > correspondence_thresh_icp/iter/iter/iter/iter) {
                         continue;
                     }
                     pcl::PointXYZ np = scans_S[ss]->at(id[0]);
@@ -532,11 +659,15 @@ Eigen::Matrix4d frameToFrame(
                             );
                 auto bid = problem.AddResidualBlock(
                         cost_function,
-                        new ceres::CauchyLoss(loss_thresh_3DPD),
+                        new ceres::ScaledLoss(
+                            new ceres::CauchyLoss(loss_thresh_3DPD),
+                            weight_3DPD,
+                            ceres::TAKE_OWNERSHIP),
                         transform);
-                icp_blocks.push_back(bid);
+                //icp_blocks.push_back(bid);
             }
         }
+#endif
         //residualStats(problem, good_matches, residual_type);
         ceres::Solver::Options options;
         options.linear_solver_type = ceres::DENSE_SCHUR;
@@ -544,8 +675,10 @@ Eigen::Matrix4d frameToFrame(
         options.num_threads = 1;
         ceres::Solver::Summary summary;
         ceres::Solve(options, &problem, &summary);
+        if(icp_iterations - iter == 0) {
+            residualStats(problem, good_matches, residual_type);
+        }
     }
-    //residualStats(problem, good_matches, residual_type);
 
     /*
     for(int i=0; i<6; i++) {

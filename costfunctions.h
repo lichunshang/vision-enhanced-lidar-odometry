@@ -1,5 +1,19 @@
 #pragma once
 
+struct costVertical {
+    costVertical() {}
+    template <typename T>
+    bool operator()(const T* x, T* residual) const {
+        T vert[3] = {0, 1, 0}, vert2[3];
+        ceres::AngleAxisRotatePoint(x, vert, vert2);
+
+        residual[0] = -1
+            + vert[0]*vert2[0]
+            + vert[1]*vert2[1]
+            + vert[2]*vert2[2];
+    }
+};
+
 struct cost3DPD {
     // 3DPD
     cost3DPD(

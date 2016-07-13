@@ -1,25 +1,21 @@
 #pragma once
 
 const int num_cams = 4,
-    corner_count = 1000, // number of features per cell
-    row_cells = 1,
-    col_cells = 1,
+    lkt_window = 15,
+    corner_count = 1000, // number of features
     icp_skip = 100,
-    icp_iterations = 5;
-
-int img_width = 1226, // kitti data
-    img_height = 370,
-    cell_width = img_width / col_cells,
-    cell_height = img_height / row_cells;
+    icp_iterations = 2,
+    detect_every = 3; // detect new features every this number of frames
 
 const double PI = 3.1415926535897932384626433832795028,
+    flow_outlier = 10000, // pixels^2, squared distance of optical flow
     quality_level = 0.005, // good features to track quality
     min_distance = 10, // pixel distance between nearest features
     weight_3D2D = 10,
-    weight_2D2D = 1000,
-    weight_3DPD = 0.1, // there are more of them
+    weight_2D2D = 500,
+    weight_3DPD = 3, // there are more of them
     loss_thresh_3D2D = 0.01, // reprojection error, canonical camera units
-    loss_thresh_2D2D = 0.0001,
+    loss_thresh_2D2D = 0.00002,
     loss_thresh_3DPD = 0.1, // physical distance, meters
     loss_thresh_3D3D = 0.05, // physical distance, meters
     match_thresh = 30, // bits, hamming distance for FREAK features
@@ -28,6 +24,9 @@ const double PI = 3.1415926535897932384626433832795028,
     outlier_reject = 7.0,
     correspondence_thresh_icp = 1,
     icp_norm_condition = 1e-5;
+
+int img_width = 1226, // kitti data
+    img_height = 370;
 
 std::vector<Eigen::Matrix<float, 3, 4>,
     Eigen::aligned_allocator<Eigen::Matrix<float, 3, 4>>> cam_mat;
@@ -177,8 +176,6 @@ cv::Mat loadImage(
     cv::Mat I = cv::imread(ss.str(), 0);
     img_width = I.cols;
     img_height = I.rows;
-    cell_width = img_width / col_cells;
-    cell_height = img_height / row_cells;
     return I;
 }
 

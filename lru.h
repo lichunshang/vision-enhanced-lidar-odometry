@@ -2,6 +2,8 @@
 
 // Least-recently used cache for storing lidar scans
 // because we can't keep all 5000 in memory.
+// Each scan has 130,000 points, each taking up 16 bytes
+// not counting the duplication and overhead in the kd tree
 struct ScanData {
     std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans;
     std::vector<pcl::KdTreeFLANN<pcl::PointXYZ>> trees;

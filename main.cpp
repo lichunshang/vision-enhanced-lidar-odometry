@@ -38,13 +38,16 @@
 #include <isam/isam.h>
 #include <isam/robust.h>
 
+#define VISUALIZE
+//#define ENABLE_ICP
+#define ENABLE_2D2D
+
 #include "utility.h"
 #include "kitti.h"
 #include "costfunctions.h"
 #include "velo.h"
 #include "lru.h"
 
-//#define VISUALIZE
 
 int main(int argc, char** argv) {
     cv::setUseOptimized(true);
@@ -62,35 +65,40 @@ int main(int argc, char** argv) {
     loadCalibration(dataset);
     loadTimes(dataset);
 
-    for(int i=0; i<num_cams; i++) {
-        //std::cerr << cam_mat[i] << std::endl;
-        //std::cerr << cam_intrinsic[i] << std::endl;
-        //std::cerr << cam_trans[i] << std::endl;
-        //std::cerr << min_x[i] << " " << min_y[i] << " " << max_x[i] << " " << max_y[i] << " " << std::endl;
-    }
-
-    //std::cerr << velo_to_cam << std::endl;
-
-    //std::cerr << times.size() << std::endl;
-
     int num_frames = times.size();
 
+    // FREAK feature descriptor
     cv::Ptr<cv::xfeatures2d::FREAK> freak = cv::xfeatures2d::FREAK::create();
+    // good features to detect
     cv::Ptr<cv::GFTTDetector> gftt = cv::GFTTDetector::create(
             corner_count,
             quality_level,
             min_distance);
 
-
+    // tracked keypoints, camera canonical coordinates
     std::vector<std::vector<std::vector<cv::Point2f>>> keypoints(num_cams,
             std::vector<std::vector<cv::Point2f>>(num_frames));
+    // tracked keypoints, pixel coordinates
+    std::vector<std::vector<std::vector<cv::Point2f>>> keypoints_p(num_cams,
+            std::vector<std::vector<cv::Point2f>>(num_frames));
+    // IDs of keypoints
+    std::vector<std::vector<std::vector<int>>> keypoint_ids(num_cams,
+            std::vector<std::vector<int>>(num_frames));
+    // FREAK descriptors of each keypoint
     std::vector<std::vector<cv::Mat>> descriptors(num_cams,
             std::vector<cv::Mat>(num_frames));
+    // -1 if no depth, index of kp_with_depth otherwise
     std::vector<std::vector<std::vector<int>>> has_depth(num_cams,
             std::vector<std::vector<int>>(num_frames));
+    // interpolated lidar point, physical coordinates
     std::vector<std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>> kp_with_depth(
             num_cams,
             std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>(num_frames));
+    // images of previous frame, used for optical flow tracking
+    std::vector<cv::Mat> img_prevs(num_cams);
+
+    // counters for keypoint id, one for each camera
+    std::vector<int> id_counter(num_cams, 0);
 
 #ifdef VISUALIZE
     char video[] = "video";
@@ -109,12 +117,18 @@ int main(int argc, char** argv) {
         for(int cam = 0; cam<num_cams; cam++) {
             cv::Mat img = loadImage(dataset, cam, frame);
 
-            detectFeatures(keypoints[cam][frame],
-                    descriptors[cam][frame],
+            trackAndDetectFeatures(
+                    keypoints[cam],
+                    keypoints_p[cam],
+                    keypoint_ids[cam],
+                    descriptors[cam],
                     gftt,
                     freak,
+                    img_prevs[cam],
                     img,
-                    cam);
+                    id_counter[cam],
+                    cam,
+                    frame);
 
             std::vector<std::vector<cv::Point2f>> projection;
             std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans_valid;
@@ -128,15 +142,20 @@ int main(int argc, char** argv) {
                     projection,
                     keypoints[cam][frame],
                     kp_with_depth[cam][frame]);
+            img_prevs[cam] = img;
         }
 
         if(frame > 0) {
+            // matches are what's fed into frameToFrame,
+            // good matches have outliers removed during optimization
+            std::vector<std::vector<std::pair<int, int>>> matches(num_cams);
             std::vector<std::vector<std::pair<int, int>>> good_matches(num_cams);
             ScanData *sd_prev = lru.get(dataset, frame);
             const auto &scans_prev = sd_prev->scans;
             const auto &trees = sd_prev->trees;
+            matchUsingId(keypoint_ids, frame, frame-1, matches);
             pose *= frameToFrame(
-                    descriptors,
+                    matches,
                     keypoints,
                     kp_with_depth,
                     has_depth,
