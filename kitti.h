@@ -1,7 +1,7 @@
 #pragma once
 
 const int num_cams = 4,
-    lkt_window = 15,
+    lkt_window = 21,
     corner_count = 1000, // number of features
     icp_skip = 100,
     icp_iterations = 2,

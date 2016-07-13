@@ -49,11 +49,11 @@ void trackAndDetectFeatures(
                 status,
                 err,
                 cv::Size(lkt_window, lkt_window),
-                3,
-                cvTermCriteria(
+                4,
+                cv::TermCriteria(
                     CV_TERMCRIT_ITER | CV_TERMCRIT_EPS,
-                    20,
-                    0.05
+                    30,
+                    0.01
                     ),
                 0
                 );
@@ -61,43 +61,50 @@ void trackAndDetectFeatures(
             row_cells = img_height / min_distance + 2;
         std::vector<std::vector<cv::Point2f>> occupied(col_cells * row_cells);
         for(int i=0; i<m; i++) {
-            if(status[i]) {
-                if(util::dist2(
-                            points1[i], 
-                            points2[i]
-                            ) > flow_outlier) {
-                    continue;
-                }
-                int col = points2[i].x / min_distance,
-                    row = points2[i].y / min_distance;
-                bool bad = false;
-                int col_start = std::max(col-1, 0),
-                    col_end = std::min(col+1, col_cells-1),
-                    row_start = std::max(row-1, 0),
-                    row_end = std::min(row+1, row_cells-1);
-                float md2 = min_distance * min_distance;
-                for(int c=col_start; c<=col_end && !bad; c++) {
-                    for(int r=row_start; r<=row_end && !bad; r++) {
-                        for(auto pp : occupied[c * row_cells + r]) {
-                            if(util::dist2(pp, points2[i]) < md2) {
-                                bad = true;
-                                break;
-                            }
+            if(!status[i]) {
+                continue;
+            }
+            if(util::dist2(
+                        points1[i], 
+                        points2[i]
+                        ) > flow_outlier) {
+                continue;
+            }
+            // somehow points can be tracked to negative x and y
+            if(points2[i].x < 0 || points2[i].y < 0 ||
+                    points2[i].x >= img_width ||
+                    points2[i].y >= img_height) {
+                continue;
+            }
+            int col = points2[i].x / min_distance,
+                row = points2[i].y / min_distance;
+            bool bad = false;
+            int col_start = std::max(col-1, 0),
+                col_end = std::min(col+1, col_cells-1),
+                row_start = std::max(row-1, 0),
+                row_end = std::min(row+1, row_cells-1);
+            float md2 = min_distance * min_distance;
+            for(int c=col_start; c<=col_end && !bad; c++) {
+                for(int r=row_start; r<=row_end && !bad; r++) {
+                    for(auto pp : occupied[c * row_cells + r]) {
+                        if(util::dist2(pp, points2[i]) < md2) {
+                            bad = true;
+                            break;
                         }
                     }
                 }
-                if(bad) continue;
-                occupied[col * row_cells + row].push_back(points2[i]);
-                keypoints_p[frame].push_back(points2[i]);
-                keypoints[frame].push_back(
-                        pixel2canonical(points2[i], Kinv)
-                        );
-                keypoint_ids[frame].push_back(
-                        keypoint_ids[frame-1][i]);
-                descriptors[frame].push_back(
-                        descriptors[frame-1].row(i).clone()
-                        );
             }
+            if(bad) continue;
+            occupied[col * row_cells + row].push_back(points2[i]);
+            keypoints_p[frame].push_back(points2[i]);
+            keypoints[frame].push_back(
+                    pixel2canonical(points2[i], Kinv)
+                    );
+            keypoint_ids[frame].push_back(
+                    keypoint_ids[frame-1][i]);
+            descriptors[frame].push_back(
+                    descriptors[frame-1].row(i).clone()
+                    );
         }
     }
 
