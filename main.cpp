@@ -9,6 +9,7 @@
 #include <cmath>
 #include <list>
 #include <unordered_map>
+#include <random>
 
 #include <Eigen/StdVector>
 #include <Eigen/Dense>
@@ -68,7 +69,10 @@ int main(int argc, char** argv) {
     int num_frames = times.size();
 
     // FREAK feature descriptor
-    cv::Ptr<cv::xfeatures2d::FREAK> freak = cv::xfeatures2d::FREAK::create();
+    cv::Ptr<cv::xfeatures2d::FREAK> freak = cv::xfeatures2d::FREAK::create(
+            false, // not orientation normalized
+            false // not scale normalized
+            );
     // good features to detect
     cv::Ptr<cv::GFTTDetector> gftt = cv::GFTTDetector::create(
             corner_count,
@@ -94,11 +98,12 @@ int main(int argc, char** argv) {
     std::vector<std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>> kp_with_depth(
             num_cams,
             std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>(num_frames));
-    // images of previous frame, used for optical flow tracking
+    // images of current and frame, used for optical flow tracking
+    std::vector<cv::Mat> imgs(num_cams);
     std::vector<cv::Mat> img_prevs(num_cams);
 
     // counters for keypoint id, one for each camera
-    std::vector<int> id_counter(num_cams, 0);
+    int id_counter = 0;
 
 #ifdef VISUALIZE
     char video[] = "video";
@@ -106,8 +111,9 @@ int main(int argc, char** argv) {
 #endif
 
     Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
-    double transform[6] = {0, 0, 0, 0, 0, 0.5};
+    double transform[6] = {0, 0, 0, 0, 0, 1};
     ScansLRU lru;
+
 
     for(int frame = 0; frame < num_frames; frame++) {
         auto start = clock()/double(CLOCKS_PER_SEC);
@@ -115,20 +121,67 @@ int main(int argc, char** argv) {
         ScanData *sd = lru.get(dataset, frame);
         const auto &scans = sd->scans;
         for(int cam = 0; cam<num_cams; cam++) {
-            cv::Mat img = loadImage(dataset, cam, frame);
+            imgs[cam] = loadImage(dataset, cam, frame);
+        }
 
-            trackAndDetectFeatures(
-                    keypoints[cam],
-                    keypoints_p[cam],
-                    keypoint_ids[cam],
-                    descriptors[cam],
-                    gftt,
+        for(int cam = 0; cam<num_cams; cam++) {
+            if(frame > 0) {
+                //for(int prev_cam = 0; prev_cam < num_cams; prev_cam++) {
+                int prev_cam = cam;
+                    trackFeatures(
+                            keypoints,
+                            keypoints_p,
+                            keypoint_ids,
+                            descriptors,
+                            img_prevs[prev_cam],
+                            imgs[cam],
+                            prev_cam,
+                            cam,
+                            frame-1,
+                            frame);
+                //}
+            }
+            if(frame % detect_every == 0) {
+                detectFeatures(
+                        keypoints[cam],
+                        keypoints_p[cam],
+                        keypoint_ids[cam],
+                        descriptors[cam],
+                        gftt,
+                        freak,
+                        imgs[cam],
+                        id_counter,
+                        cam,
+                        frame);
+            }
+            if(cam != 0) {
+                trackFeatures(
+                        keypoints,
+                        keypoints_p,
+                        keypoint_ids,
+                        descriptors,
+                        imgs[0],
+                        imgs[cam],
+                        0,
+                        cam,
+                        frame,
+                        frame);
+            }
+            consolidateFeatures(
+                    keypoints[cam][frame],
+                    keypoints_p[cam][frame],
+                    keypoint_ids[cam][frame],
+                    descriptors[cam][frame],
+                    cam);
+
+            removeTerribleFeatures(
+                    keypoints[cam][frame],
+                    keypoints_p[cam][frame],
+                    keypoint_ids[cam][frame],
+                    descriptors[cam][frame],
                     freak,
-                    img_prevs[cam],
-                    img,
-                    id_counter[cam],
-                    cam,
-                    frame);
+                    imgs[cam],
+                    cam);
 
             std::vector<std::vector<cv::Point2f>> projection;
             std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans_valid;
@@ -142,7 +195,7 @@ int main(int argc, char** argv) {
                     projection,
                     keypoints[cam][frame],
                     kp_with_depth[cam][frame]);
-            img_prevs[cam] = img;
+            img_prevs[cam] = imgs[cam];
         }
 
         if(frame > 0) {
@@ -178,7 +231,7 @@ int main(int argc, char** argv) {
             std::cerr << std::endl;
 
 #ifdef VISUALIZE
-            int cam = 0;
+            int cam = 1;
             cv::Mat draw;
             cv::Mat img = loadImage(dataset, cam, frame);
             cvtColor(img, draw, cv::COLOR_GRAY2BGR);
@@ -190,9 +243,9 @@ int main(int argc, char** argv) {
                 pe = cam_intrinsic[cam] * pe;
                 cv::Point2f pp(pe(0)/pe(2), pe(1)/pe(2));
                 if(has_depth[cam][frame][k] != -1) {
-                    cv::circle(draw, pp, 3, cv::Scalar(0, 0, 255), -1, 8, 0);
+                    cv::circle(draw, pp, 2, cv::Scalar(0, 0, 255), -1, 8, 0);
                 } else {
-                    cv::circle(draw, pp, 3, cv::Scalar(255, 200, 0), -1, 8, 0);
+                    cv::circle(draw, pp, 2, cv::Scalar(255, 200, 0), -1, 8, 0);
                 }
             }
 
@@ -209,6 +262,22 @@ int main(int argc, char** argv) {
                 }
             }
             */
+
+            for(auto m : matches[cam]) {
+                auto p1 = keypoints[cam][frame][m.first];
+                auto p2 = keypoints[cam][frame-1][m.second];
+                Eigen::Vector3f pe1;
+                pe1 << p1.x, p1.y, 1;
+                pe1 = cam_intrinsic[cam] * pe1;
+                Eigen::Vector3f pe2;
+                pe2 << p2.x, p2.y, 1;
+                pe2 = cam_intrinsic[cam] * pe2;
+                cv::Point2f pp1(pe1(0)/pe1(2), pe1(1)/pe1(2));
+                cv::Point2f pp2(pe2(0)/pe2(2), pe2(1)/pe2(2));
+                cv::arrowedLine(draw, pp1, pp2,
+                        cv::Scalar(255, 0, 255));
+            }
+
             for(auto m : good_matches[cam]) {
                 auto p1 = keypoints[cam][frame][m.first];
                 auto p2 = keypoints[cam][frame-1][m.second];

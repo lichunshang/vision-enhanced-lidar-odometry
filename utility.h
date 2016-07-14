@@ -1,4 +1,7 @@
 const double INF = 1e18;
+const double PI = 3.1415926535897932384626433832795028;
+const float geomedian_EPS = 1e-6;
+const float kp_EPS = 1e-6;
 class util {
     public:
     static pcl::PointXYZ linterpolate(
@@ -97,6 +100,34 @@ class util {
         p.x = y[0] + transform[3];
         p.y = y[1] + transform[4];
         p.z = y[2] + transform[5];
+    }
+
+    static cv::Point2f geomedian(std::vector<cv::Point2f> P) {
+        int m = P.size();
+        cv::Point2f y(0,0);
+        for(int i=0; i<m; i++) {
+            y += P[i];
+        }
+        y /= (float)m;
+        for(int iter = 0; iter < 20; iter++) {
+            cv::Point2f yy(0,0);
+            float d = 0;
+            for(int i=0; i<m; i++) {
+                float no = cv::norm(P[i] - y);
+                if(no < geomedian_EPS) {
+                    return y;
+                }
+                float nn = 1.0/no;
+
+                yy += P[i]*nn;
+                d += nn;
+            }
+            if(cv::norm(yy/d - y) < geomedian_EPS) {
+                return yy/d;
+            }
+            y = yy/d;
+        }
+        return y;
     }
 };
 

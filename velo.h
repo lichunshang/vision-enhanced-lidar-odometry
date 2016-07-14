@@ -16,155 +16,266 @@ cv::Point2f pixel2canonical(
     return cv::Point2f(p(0)/p(2), p(1)/p(2));
 }
 
-void trackAndDetectFeatures(
+cv::Point2f canonical2pixel(
+        const cv::Point2f &pp,
+        const Eigen::Matrix3f &K) {
+    Eigen::Vector3f p;
+    p << pp.x, pp.y, 1;
+    p = K * p;
+    return cv::Point2f(p(0)/p(2), p(1)/p(2));
+}
+
+void trackFeatures(
+        std::vector<std::vector<std::vector<cv::Point2f>>> &keypoints,
+        std::vector<std::vector<std::vector<cv::Point2f>>> &keypoints_p,
+        std::vector<std::vector<std::vector<int>>> &keypoint_ids,
+        std::vector<std::vector<cv::Mat>> &descriptors,
+        const cv::Mat &img1,
+        const cv::Mat &img2,
+        const int cam1,
+        const int cam2,
+        const int frame1,
+        const int frame2
+        ) {
+    const Eigen::Matrix3f &Kinv1 = cam_intrinsic_inv[cam1];
+    const Eigen::Matrix3f &Kinv2 = cam_intrinsic_inv[cam2];
+
+    int m = keypoints[cam1][frame1].size();
+    if(m == 0) {
+        std::cerr << "ERROR: No features to track." << std::endl;
+    }
+    std::vector<cv::Point2f> points1(m), points2(m);
+    for(int i=0; i<m; i++) {
+        points1[i] = keypoints_p[cam1][frame1][i];
+    }
+    std::vector<unsigned char> status;
+    std::vector<float> err;
+    cv::calcOpticalFlowPyrLK(
+            img1,
+            img2,
+            points1,
+            points2,
+            status,
+            err,
+            cv::Size(lkt_window, lkt_window),
+            lkt_pyramid,
+            cv::TermCriteria(
+                CV_TERMCRIT_ITER | CV_TERMCRIT_EPS,
+                30,
+                0.01
+                ),
+            0
+            );
+    int col_cells = img_width / min_distance + 2,
+        row_cells = img_height / min_distance + 2;
+    std::vector<std::vector<cv::Point2f>> occupied(col_cells * row_cells);
+    for(int i=0; i<m; i++) {
+        if(!status[i]) {
+            continue;
+        }
+        if(util::dist2(points1[i], points2[i]) > flow_outlier) {
+            continue;
+        }
+        // somehow points can be tracked to negative x and y
+        if(points2[i].x < 0 || points2[i].y < 0 ||
+                points2[i].x >= img_width ||
+                points2[i].y >= img_height) {
+            continue;
+        }
+        int col = points2[i].x / min_distance,
+            row = points2[i].y / min_distance;
+        bool bad = false;
+        int col_start = std::max(col-1, 0),
+            col_end = std::min(col+1, col_cells-1),
+            row_start = std::max(row-1, 0),
+            row_end = std::min(row+1, row_cells-1);
+        float md2 = min_distance * min_distance;
+        for(int c=col_start; c<=col_end && !bad; c++) {
+            for(int r=row_start; r<=row_end && !bad; r++) {
+                for(auto pp : occupied[c * row_cells + r]) {
+                    if(util::dist2(pp, points2[i]) < md2) {
+                        bad = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if(bad) continue;
+        occupied[col * row_cells + row].push_back(points2[i]);
+        keypoints_p[cam2][frame2].push_back(points2[i]);
+        keypoints[cam2][frame2].push_back(
+                pixel2canonical(points2[i], Kinv2)
+                );
+        keypoint_ids[cam2][frame2].push_back(
+                keypoint_ids[cam1][frame1][i]);
+        descriptors[cam2][frame2].push_back(
+                descriptors[cam1][frame1].row(i).clone());
+    }
+}
+
+void detectFeatures(
         std::vector<std::vector<cv::Point2f>> &keypoints,
         std::vector<std::vector<cv::Point2f>> &keypoints_p,
         std::vector<std::vector<int>> &keypoint_ids,
         std::vector<cv::Mat> &descriptors,
         const cv::Ptr<cv::FeatureDetector> detector,
         const cv::Ptr<cv::DescriptorExtractor> extractor,
-        cv::Mat &img1,
-        cv::Mat &img2,
+        const cv::Mat &img,
         int &id_counter,
-        const int which_cam,
+        const int cam,
         const int frame
         ) {
-    Eigen::Matrix3f Kinv = cam_intrinsic[which_cam].inverse();
-    if(frame > 0) {
-        int m = keypoints[frame-1].size();
-        if(m == 0) {
-            std::cerr << "WARNING: No features to track." << std::endl;
-        }
-        std::vector<cv::Point2f> points1(m), points2(m);
-        for(int i=0; i<m; i++) {
-            points1[i] = keypoints_p[frame-1][i];
-        }
-        std::vector<unsigned char> status;
-        std::vector<float> err;
-        cv::calcOpticalFlowPyrLK(
-                img1,
-                img2,
-                points1,
-                points2,
-                status,
-                err,
-                cv::Size(lkt_window, lkt_window),
-                4,
-                cv::TermCriteria(
-                    CV_TERMCRIT_ITER | CV_TERMCRIT_EPS,
-                    30,
-                    0.01
-                    ),
-                0
-                );
-        int col_cells = img_width / min_distance + 2,
-            row_cells = img_height / min_distance + 2;
-        std::vector<std::vector<cv::Point2f>> occupied(col_cells * row_cells);
-        for(int i=0; i<m; i++) {
-            if(!status[i]) {
-                continue;
-            }
-            if(util::dist2(
-                        points1[i], 
-                        points2[i]
-                        ) > flow_outlier) {
-                continue;
-            }
-            // somehow points can be tracked to negative x and y
-            if(points2[i].x < 0 || points2[i].y < 0 ||
-                    points2[i].x >= img_width ||
-                    points2[i].y >= img_height) {
-                continue;
-            }
-            int col = points2[i].x / min_distance,
-                row = points2[i].y / min_distance;
-            bool bad = false;
-            int col_start = std::max(col-1, 0),
-                col_end = std::min(col+1, col_cells-1),
-                row_start = std::max(row-1, 0),
-                row_end = std::min(row+1, row_cells-1);
-            float md2 = min_distance * min_distance;
-            for(int c=col_start; c<=col_end && !bad; c++) {
-                for(int r=row_start; r<=row_end && !bad; r++) {
-                    for(auto pp : occupied[c * row_cells + r]) {
-                        if(util::dist2(pp, points2[i]) < md2) {
-                            bad = true;
-                            break;
-                        }
+    const Eigen::Matrix3f &Kinv = cam_intrinsic_inv[cam];
+
+    int col_cells = img_width / min_distance + 2,
+        row_cells = img_height / min_distance + 2;
+    std::vector<std::vector<cv::Point2f>> occupied(col_cells * row_cells);
+    for(cv::Point2f p : keypoints_p[frame]) {
+        int col = p.x / min_distance,
+            row = p.y / min_distance;
+        occupied[col * row_cells + row].push_back(p);
+    }
+    std::vector<cv::KeyPoint> cvKP;
+    detector->detect(img, cvKP);
+    cv::Mat tmp_descriptors;
+    // remember! compute MUTATES cvKP
+    extractor->compute(img, cvKP, tmp_descriptors);
+    int detected = 0;
+    for(int kp_i = 0; kp_i < cvKP.size(); kp_i ++) {
+        auto kp = cvKP[kp_i];
+        //std::cerr << kp.size << " " << kp.angle << " " << kp.response << std::endl;
+        int col = kp.pt.x / min_distance,
+            row = kp.pt.y / min_distance;
+        bool bad = false;
+        int col_start = std::max(col-1, 0),
+            col_end = std::min(col+1, col_cells-1),
+            row_start = std::max(row-1, 0),
+            row_end = std::min(row+1, row_cells-1);
+        float md2 = min_distance * min_distance;
+        for(int c=col_start; c<=col_end && !bad; c++) {
+            for(int r=row_start; r<=row_end && !bad; r++) {
+                for(auto pp : occupied[c * row_cells + r]) {
+                    if(util::dist2(pp, kp.pt) < md2) {
+                        bad = true;
+                        break;
                     }
                 }
             }
-            if(bad) continue;
-            occupied[col * row_cells + row].push_back(points2[i]);
-            keypoints_p[frame].push_back(points2[i]);
-            keypoints[frame].push_back(
-                    pixel2canonical(points2[i], Kinv)
-                    );
-            keypoint_ids[frame].push_back(
-                    keypoint_ids[frame-1][i]);
-            descriptors[frame].push_back(
-                    descriptors[frame-1].row(i).clone()
-                    );
         }
+        if(bad) continue;
+        keypoints_p[frame].push_back(kp.pt);
+        keypoints[frame].push_back(
+                pixel2canonical(kp.pt, Kinv)
+                );
+        descriptors[frame].push_back(tmp_descriptors.row(kp_i).clone());
+        keypoint_ids[frame].push_back(id_counter++);
+        detected++;
+    }
+    //std::cerr << "Detected: " << detected << std::endl;
+}
+
+void consolidateFeatures(
+        std::vector<cv::Point2f> &keypoints,
+        std::vector<cv::Point2f> &keypoints_p,
+        std::vector<int> &keypoint_ids,
+        cv::Mat &descriptors,
+        const int cam
+        ) {
+    // merges keypoints of the same id using the geometric median
+    // geometric median is computed in canonical coordinates
+    const Eigen::Matrix3f &K = cam_intrinsic[cam];
+    int m = keypoint_ids.size();
+    std::map<int, std::vector<int>> keypoints_map;
+    for(int i=0; i<m; i++) {
+        keypoints_map[keypoint_ids[i]].push_back(i);
+    }
+    int mm = keypoints_map.size();
+    std::vector<cv::Point2f> tmp_keypoints(mm);
+    std::vector<cv::Point2f> tmp_keypoints_p(mm);
+    std::vector<int> tmp_keypoint_ids(mm);
+    cv::Mat tmp_descriptors(mm, descriptors.cols, descriptors.type());
+    int mi = 0;
+    for(auto kp : keypoints_map) {
+        int id = kp.first;
+        int n = kp.second.size();
+
+        cv::Point2f gm_keypoint;
+        if(n > 2) {
+            std::vector<cv::Point2f> tmp_tmp_keypoints(n);
+            for(int i=0; i<n; i++) {
+                int j = kp.second[i];
+                tmp_tmp_keypoints[i] = keypoints[j];
+            }
+            gm_keypoint = util::geomedian(tmp_tmp_keypoints);
+        } else if(n ==2) {
+            gm_keypoint = (
+                    keypoints[kp.second[0]] + 
+                    keypoints[kp.second[1]])/2;
+        } else {
+            gm_keypoint = keypoints[kp.second[0]];
+        }
+        tmp_keypoint_ids[mi] = id;
+        tmp_keypoints[mi] = gm_keypoint;
+        tmp_keypoints_p[mi] = canonical2pixel(gm_keypoint, K);
+        descriptors.row(kp.second[0]).copyTo(tmp_descriptors.row(mi));
+        mi++;
     }
 
-    if(frame < 0 || frame % detect_every == 0) {
-        int col_cells = img_width / min_distance + 2,
-            row_cells = img_height / min_distance + 2;
-        std::vector<std::vector<cv::Point2f>> occupied(col_cells * row_cells);
-        for(cv::Point2f p : keypoints_p[frame]) {
-            int col = p.x / min_distance,
-                row = p.y / min_distance;
-            occupied[col * row_cells + row].push_back(p);
-        }
-        std::vector<cv::KeyPoint> cvKP;
-        detector->detect(img2, cvKP);
-        cv::Mat tmp_descriptors;
-        // remember! compute MUTATES cvKP
-        extractor->compute(img2, cvKP, tmp_descriptors);
-        int detected = 0;
-        for(int kp_i = 0; kp_i < cvKP.size(); kp_i ++) {
-            auto kp = cvKP[kp_i];
-            int col = kp.pt.x / min_distance,
-                row = kp.pt.y / min_distance;
-            bool bad = false;
-            int col_start = std::max(col-1, 0),
-                col_end = std::min(col+1, col_cells-1),
-                row_start = std::max(row-1, 0),
-                row_end = std::min(row+1, row_cells-1);
-            float md2 = min_distance * min_distance;
-            for(int c=col_start; c<=col_end && !bad; c++) {
-                for(int r=row_start; r<=row_end && !bad; r++) {
-                    for(auto pp : occupied[c * row_cells + r]) {
-                        if(util::dist2(pp, kp.pt) < md2) {
-                            bad = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            if(bad) continue;
-            keypoints_p[frame].push_back(kp.pt);
-            keypoints[frame].push_back(
-                    pixel2canonical(kp.pt, Kinv)
-                    );
-            descriptors[frame].push_back(tmp_descriptors.row(kp_i).clone());
-            keypoint_ids[frame].push_back(id_counter++);
-            detected++;
-        }
-        //std::cerr << "Detected: " << detected << std::endl;
+    keypoints = tmp_keypoints;
+    keypoints_p = tmp_keypoints_p;
+    keypoint_ids = tmp_keypoint_ids;
+    tmp_descriptors.copyTo(descriptors);
+}
+
+void removeTerribleFeatures(
+        std::vector<cv::Point2f> &keypoints,
+        std::vector<cv::Point2f> &keypoints_p,
+        std::vector<int> &keypoint_ids,
+        cv::Mat &descriptors,
+        const cv::Ptr<cv::DescriptorExtractor> extractor,
+        const cv::Mat &img,
+        const int cam
+        ) {
+    // remove features if the extracted descriptor doesn't match
+    std::vector<cv::KeyPoint> cvKP(keypoints_p.size());
+    for(int i=0; i<keypoints_p.size(); i++) {
+        cvKP[i].pt = keypoints_p[i];
     }
+    std::vector<cv::Point2f> tmp_keypoints;
+    std::vector<cv::Point2f> tmp_keypoints_p;
+    std::vector<int> tmp_keypoint_ids;
+    cv::Mat tmp_descriptors, tmp_tmp_descriptors;
+
+    int i=0;
+    extractor->compute(img, cvKP, tmp_tmp_descriptors);
+    for(int j=0; j<cvKP.size(); j++) {
+        while(cv::norm(keypoints_p[i] - cvKP[j].pt) > kp_EPS) {
+            i++;
+        }
+        if(cv::norm(descriptors.row(i),
+                    tmp_tmp_descriptors.row(j),
+                    cv::NORM_HAMMING) < match_thresh) {
+            tmp_keypoints.push_back(keypoints[i]);
+            tmp_keypoints_p.push_back(keypoints_p[i]);
+            tmp_keypoint_ids.push_back(keypoint_ids[i]);
+            tmp_descriptors.push_back(descriptors.row(i).clone());
+        }
+    }
+    keypoints = tmp_keypoints;
+    keypoints_p = tmp_keypoints_p;
+    keypoint_ids = tmp_keypoint_ids;
+    tmp_descriptors.copyTo(descriptors);
 }
 
 void projectLidarToCamera(
         const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> &scans,
         std::vector<std::vector<cv::Point2f>> &projection,
         std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> &scans_valid,
-        const int which_cam
+        const int cam
         ) {
 
     int bad = 0;
-    Eigen::Vector3f t = cam_trans[which_cam];
+    Eigen::Vector3f t = cam_trans[cam];
 
     for(int s=0; s<scans.size(); s++) {
         pcl::PointCloud<pcl::PointXYZ> projected_points;
@@ -175,8 +286,8 @@ void projectLidarToCamera(
             pcl::PointXYZ p = scans[s]->at(i);
             pcl::PointXYZ pp(p.x + t(0), p.y + t(1), p.z + t(2));
             cv::Point2f c(pp.x/pp.z, pp.y/pp.z);
-            if(pp.z > 0 && c.x >= min_x[which_cam] && c.x < max_x[which_cam]
-                    && c.y >= min_y[which_cam] && c.y < max_y[which_cam]) {
+            if(pp.z > 0 && c.x >= min_x[cam] && c.x < max_x[cam]
+                    && c.y >= min_y[cam] && c.y < max_y[cam]) {
                 // remove points occluded by current point
                 while(projection[s].size() > 0
                         && c.x < projection[s].back().x
@@ -409,198 +520,198 @@ Eigen::Matrix4d frameToFrame(
         std::vector<std::vector<std::pair<int, int>>> &good_matches
         ) {
 
-    for(int iter = 1; iter <= icp_iterations; iter++) {
-    ceres::Problem::Options problem_options;
-    problem_options.enable_fast_removal = true;
-    ceres::Problem problem(problem_options);
+    for(int iter = 1; iter <= f2f_iterations; iter++) {
+        ceres::Problem::Options problem_options;
+        problem_options.enable_fast_removal = true;
+        ceres::Problem problem(problem_options);
 
-    std::vector<std::vector<ResidualType>> residual_type(num_cams);
+        std::vector<std::vector<ResidualType>> residual_type(num_cams);
 
-    // Visual odometry
-    for(int cam = 0; cam<num_cams; cam++) {
-        good_matches[cam].clear();
-        const std::vector<std::pair<int, int>> &mc = matches[cam];
-        for(int i=0; i<mc.size(); i++) {
-            int point1 = mc[i].first,
-                point2 = mc[i].second;
-            if(has_depth[cam][frame1][point1] != -1
-                    && has_depth[cam][frame2][point2] != -1) {
-                // 3D 3D
-                const pcl::PointXYZ pointM =
-                    keypoints_with_depth[cam][frame1]
+        // Visual odometry
+        for(int cam = 0; cam<num_cams; cam++) {
+            good_matches[cam].clear();
+            const std::vector<std::pair<int, int>> &mc = matches[cam];
+            for(int i=0; i<mc.size(); i++) {
+                int point1 = mc[i].first,
+                    point2 = mc[i].second;
+                if(has_depth[cam][frame1][point1] != -1
+                        && has_depth[cam][frame2][point2] != -1) {
+                    // 3D 3D
+                    const pcl::PointXYZ pointM =
+                        keypoints_with_depth[cam][frame1]
                         ->at(has_depth[cam][frame1][point1]);
-                const pcl::PointXYZ pointS =
-                    keypoints_with_depth[cam][frame2]
+                    const pcl::PointXYZ pointS =
+                        keypoints_with_depth[cam][frame2]
                         ->at(has_depth[cam][frame2][point2]);
-                auto pointMS = pointM;
-                util::subtract_assign(pointMS, pointS);
-                //std::cerr << "  3D 3D " << cam << ": " << pointM<< ", " << pointS << std::endl;
-                cost3D3D *cost = new cost3D3D(
-                                pointM.x,
-                                pointM.y,
-                                pointM.z,
-                                pointS.x,
-                                pointS.y,
-                                pointS.z
-                                );
-                double residual_test[3];
-                (*cost)(transform, residual_test);
-                if(iter > 1 &&
-                        residual_test[0] * residual_test[0] +
-                        residual_test[1] * residual_test[1] +
-                        residual_test[2] * residual_test[2]
-                        >
-                        loss_thresh_3D3D*outlier_reject/iter *
-                        loss_thresh_3D3D*outlier_reject/iter) {
-                    continue;
-                }
-                ceres::CostFunction* cost_function =
-                    new ceres::AutoDiffCostFunction<cost3D3D,3,6>(
-                            cost);
-                problem.AddResidualBlock(
-                        cost_function,
-                        new ceres::ArctanLoss(loss_thresh_3D3D),
-                        transform);
-
-                residual_type[cam].push_back(RESIDUAL_3D3D);
-                good_matches[cam].push_back(std::make_pair(point1, point2));
-            } else if(has_depth[cam][frame1][point1] == -1
-                    && has_depth[cam][frame2][point2] == -1) {
-                // 2D 2D
-#ifdef ENABLE_2D2D
-                const auto pointM = keypoints[cam][frame1][point1];
-                const auto pointS = keypoints[cam][frame2][point2];
-                cost2D2D *cost =
-                    new cost2D2D(
+                    auto pointMS = pointM;
+                    util::subtract_assign(pointMS, pointS);
+                    //std::cerr << "  3D 3D " << cam << ": " << pointM<< ", " << pointS << std::endl;
+                    cost3D3D *cost = new cost3D3D(
                             pointM.x,
                             pointM.y,
+                            pointM.z,
                             pointS.x,
                             pointS.y,
-                            cam_trans[cam](0),
-                            cam_trans[cam](1),
-                            cam_trans[cam](2)
+                            pointS.z
                             );
-                double residual_test[1];
-                (*cost)(transform, residual_test);
-                if(iter > 1 && abs(residual_test[0]) > loss_thresh_2D2D*outlier_reject/iter) continue;
-                ceres::CostFunction* cost_function =
-                    new ceres::AutoDiffCostFunction<cost2D2D,1,6>(cost);
-                problem.AddResidualBlock(
-                        cost_function,
-                        new ceres::ScaledLoss(
-                            new ceres::ArctanLoss(loss_thresh_2D2D),
-                            weight_2D2D,
-                            ceres::TAKE_OWNERSHIP),
-                        transform);
-                residual_type[cam].push_back(RESIDUAL_2D2D);
-                good_matches[cam].push_back(std::make_pair(point1, point2));
+                    double residual_test[3];
+                    (*cost)(transform, residual_test);
+                    if(iter > 1 &&
+                            residual_test[0] * residual_test[0] +
+                            residual_test[1] * residual_test[1] +
+                            residual_test[2] * residual_test[2]
+                            >
+                            loss_thresh_3D3D*outlier_reject/iter *
+                            loss_thresh_3D3D*outlier_reject/iter) {
+                        continue;
+                    }
+                    ceres::CostFunction* cost_function =
+                        new ceres::AutoDiffCostFunction<cost3D3D,3,6>(
+                                cost);
+                    problem.AddResidualBlock(
+                            cost_function,
+                            new ceres::ArctanLoss(loss_thresh_3D3D),
+                            transform);
+
+                    residual_type[cam].push_back(RESIDUAL_3D3D);
+                    good_matches[cam].push_back(std::make_pair(point1, point2));
+                } else if(has_depth[cam][frame1][point1] == -1
+                        && has_depth[cam][frame2][point2] == -1) {
+                    // 2D 2D
+#ifdef ENABLE_2D2D
+                    const auto pointM = keypoints[cam][frame1][point1];
+                    const auto pointS = keypoints[cam][frame2][point2];
+                    cost2D2D *cost =
+                        new cost2D2D(
+                                pointM.x,
+                                pointM.y,
+                                pointS.x,
+                                pointS.y,
+                                cam_trans[cam](0),
+                                cam_trans[cam](1),
+                                cam_trans[cam](2)
+                                );
+                    double residual_test[1];
+                    (*cost)(transform, residual_test);
+                    if(iter > 1 && abs(residual_test[0]) > loss_thresh_2D2D*outlier_reject/iter) continue;
+                    ceres::CostFunction* cost_function =
+                        new ceres::AutoDiffCostFunction<cost2D2D,1,6>(cost);
+                    problem.AddResidualBlock(
+                            cost_function,
+                            new ceres::ScaledLoss(
+                                new ceres::ArctanLoss(loss_thresh_2D2D),
+                                weight_2D2D,
+                                ceres::TAKE_OWNERSHIP),
+                            transform);
+                    residual_type[cam].push_back(RESIDUAL_2D2D);
+                    good_matches[cam].push_back(std::make_pair(point1, point2));
 #endif
-            }
-            if(has_depth[cam][frame1][point1] != -1
-                    /*&& has_depth[cam][frame2][point2] == -1*/) {
-                // 3D 2D
-                const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame1]
-                    ->at(has_depth[cam][frame1][point1]);
-                const auto point2D = keypoints[cam][frame2][point2];
+                }
+                if(has_depth[cam][frame1][point1] != -1
+                        /*&& has_depth[cam][frame2][point2] == -1*/) {
+                    // 3D 2D
+                    const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame1]
+                        ->at(has_depth[cam][frame1][point1]);
+                    const auto point2D = keypoints[cam][frame2][point2];
 
-                cost3D2D *cost =
-                    new cost3D2D(
-                            point3D.x,
-                            point3D.y,
-                            point3D.z,
-                            point2D.x,
-                            point2D.y,
-                            cam_trans[cam](0),
-                            cam_trans[cam](1),
-                            cam_trans[cam](2)
-                            );
-                double residual_test[2];
-                (*cost)(transform, residual_test);
-                if(iter > 1 && residual_test[0] * residual_test[0] +
-                        residual_test[1] * residual_test[1]
-                        > loss_thresh_3D2D*outlier_reject/iter
-                        * loss_thresh_3D2D*outlier_reject/iter) continue;
+                    cost3D2D *cost =
+                        new cost3D2D(
+                                point3D.x,
+                                point3D.y,
+                                point3D.z,
+                                point2D.x,
+                                point2D.y,
+                                cam_trans[cam](0),
+                                cam_trans[cam](1),
+                                cam_trans[cam](2)
+                                );
+                    double residual_test[2];
+                    (*cost)(transform, residual_test);
+                    if(iter > 1 && residual_test[0] * residual_test[0] +
+                            residual_test[1] * residual_test[1]
+                            > loss_thresh_3D2D*outlier_reject/iter
+                            * loss_thresh_3D2D*outlier_reject/iter) continue;
 
-                ceres::CostFunction* cost_function =
-                    new ceres::AutoDiffCostFunction<cost3D2D,2,6>(cost);
-                problem.AddResidualBlock(
-                        cost_function,
-                        new ceres::ScaledLoss(
-                            new ceres::ArctanLoss(loss_thresh_3D2D),
-                            weight_3D2D,
-                            ceres::TAKE_OWNERSHIP),
-                        transform);
+                    ceres::CostFunction* cost_function =
+                        new ceres::AutoDiffCostFunction<cost3D2D,2,6>(cost);
+                    problem.AddResidualBlock(
+                            cost_function,
+                            new ceres::ScaledLoss(
+                                new ceres::ArctanLoss(loss_thresh_3D2D),
+                                weight_3D2D,
+                                ceres::TAKE_OWNERSHIP),
+                            transform);
 
-                residual_type[cam].push_back(RESIDUAL_3D2D);
-                good_matches[cam].push_back(std::make_pair(point1, point2));
-            }
-            if(/*has_depth[cam][frame1][point1] == -1
-                    &&*/ has_depth[cam][frame2][point2] != -1) {
-                // 2D 3D
-                const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame2]
-                    ->at(has_depth[cam][frame2][point2]);
-                const auto point2D = keypoints[cam][frame1][point1];
-                cost2D3D *cost =
-                    new cost2D3D(
-                            point3D.x,
-                            point3D.y,
-                            point3D.z,
-                            point2D.x,
-                            point2D.y,
-                            cam_trans[cam](0),
-                            cam_trans[cam](1),
-                            cam_trans[cam](2)
-                            );
-                double residual_test[2];
-                (*cost)(transform, residual_test);
-                if(iter > 1 && residual_test[0] * residual_test[0] +
-                        residual_test[1] * residual_test[1]
-                        > loss_thresh_3D2D*outlier_reject/iter
-                        * loss_thresh_3D2D*outlier_reject/iter) continue;
+                    residual_type[cam].push_back(RESIDUAL_3D2D);
+                    good_matches[cam].push_back(std::make_pair(point1, point2));
+                }
+                if(/*has_depth[cam][frame1][point1] == -1
+                     &&*/ has_depth[cam][frame2][point2] != -1) {
+                    // 2D 3D
+                    const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame2]
+                        ->at(has_depth[cam][frame2][point2]);
+                    const auto point2D = keypoints[cam][frame1][point1];
+                    cost2D3D *cost =
+                        new cost2D3D(
+                                point3D.x,
+                                point3D.y,
+                                point3D.z,
+                                point2D.x,
+                                point2D.y,
+                                cam_trans[cam](0),
+                                cam_trans[cam](1),
+                                cam_trans[cam](2)
+                                );
+                    double residual_test[2];
+                    (*cost)(transform, residual_test);
+                    if(iter > 1 && residual_test[0] * residual_test[0] +
+                            residual_test[1] * residual_test[1]
+                            > loss_thresh_3D2D*outlier_reject/iter
+                            * loss_thresh_3D2D*outlier_reject/iter) continue;
 
-                ceres::CostFunction* cost_function =
-                    new ceres::AutoDiffCostFunction<cost2D3D,2,6>(cost);
-                problem.AddResidualBlock(
-                        cost_function,
-                        new ceres::ScaledLoss(
-                            new ceres::ArctanLoss(loss_thresh_3D2D),
-                            weight_3D2D,
-                            ceres::TAKE_OWNERSHIP),
-                        transform);
+                    ceres::CostFunction* cost_function =
+                        new ceres::AutoDiffCostFunction<cost2D3D,2,6>(cost);
+                    problem.AddResidualBlock(
+                            cost_function,
+                            new ceres::ScaledLoss(
+                                new ceres::ArctanLoss(loss_thresh_3D2D),
+                                weight_3D2D,
+                                ceres::TAKE_OWNERSHIP),
+                            transform);
 
-                residual_type[cam].push_back(RESIDUAL_2D3D);
-                good_matches[cam].push_back(std::make_pair(point1, point2));
+                    residual_type[cam].push_back(RESIDUAL_2D3D);
+                    good_matches[cam].push_back(std::make_pair(point1, point2));
+                }
             }
         }
-    }
 
-    // Point set registration
+        // Point set registration
 #ifdef ENABLE_ICP
-    /*
-    std::vector<ceres::ResidualBlockId> icp_blocks;
+        /*
+           std::vector<ceres::ResidualBlockId> icp_blocks;
 
-        while(icp_blocks.size() > 0) {
-            auto bid = icp_blocks.back();
-            icp_blocks.pop_back();
-            problem.RemoveResidualBlock(bid);
-        }
-        */
+           while(icp_blocks.size() > 0) {
+           auto bid = icp_blocks.back();
+           icp_blocks.pop_back();
+           problem.RemoveResidualBlock(bid);
+           }
+           */
         for(int sm = 0; sm < scans_M.size(); sm++) {
             for(int smi = 0; smi < scans_M[sm]->size(); smi+= icp_skip) {
                 pcl::PointXYZ pointM = scans_M[sm]->at(smi);
                 pcl::PointXYZ pointM_untransformed = pointM;
                 util::transform_point(pointM, transform);
                 /*
-                 Point-to-plane ICP where plane is defined by
-                 three Nearest Points (np):
-                            np_i     np_k
-                 np_s_i ..... * ..... * .....
-                               \     /
-                                \   /
-                                 \ /
-                 np_s_j ......... * .......
-                                np_j
-                 */
+                   Point-to-plane ICP where plane is defined by
+                   three Nearest Points (np):
+                   np_i     np_k
+                   np_s_i ..... * ..... * .....
+                   \     /
+                   \   /
+                   \ /
+                   np_s_j ......... * .......
+                   np_j
+                   */
                 int np_i = 0, np_j = 0, np_k = 0;
                 int np_s_i = -1, np_s_j = -1;
                 double np_dist_i = INF, np_dist_j = INF;
@@ -635,7 +746,7 @@ Eigen::Matrix4d frameToFrame(
                     np_k_1p = (np_i+1) % np_k_n,
                     np_k_2p = (np_i-1 + np_k_n) % np_k_n;
                 pcl::PointXYZ np_k_1 = scans_S[np_s_i]->at(np_k_1p),
-                              np_k_2 = scans_S[np_s_i]->at(np_k_2p);
+                    np_k_2 = scans_S[np_s_i]->at(np_k_2p);
                 util::subtract_assign(np_k_1, pointM);
                 util::subtract_assign(np_k_2, pointM);
                 if(util::norm2(np_k_1) < util::norm2(np_k_2)) {
@@ -649,8 +760,8 @@ Eigen::Matrix4d frameToFrame(
                 s2 = scans_S[np_s_i]->at(np_k);
                 Eigen::Vector3f
                     v0 = s0.getVector3fMap(),
-                    v1 = s1.getVector3fMap(),
-                    v2 = s2.getVector3fMap();
+                       v1 = s1.getVector3fMap(),
+                       v2 = s2.getVector3fMap();
                 Eigen::Vector3f N = (v1 - v0).cross(v2 - v0);
                 if(N.norm() < icp_norm_condition) continue;
                 N /= N.norm();
@@ -682,17 +793,17 @@ Eigen::Matrix4d frameToFrame(
         options.num_threads = 1;
         ceres::Solver::Summary summary;
         ceres::Solve(options, &problem, &summary);
-        if(icp_iterations - iter == 0) {
+        if(f2f_iterations - iter == 0) {
             residualStats(problem, good_matches, residual_type);
         }
     }
 
     /*
-    for(int i=0; i<6; i++) {
-        std::cerr << transform[i] << " ";
-    }
-    std::cerr << std::endl;
-    */
+       for(int i=0; i<6; i++) {
+       std::cerr << transform[i] << " ";
+       }
+       std::cerr << std::endl;
+       */
     return util::pose_mat2vec(transform);
 }
 
@@ -767,39 +878,37 @@ void residualStats(
         << " Residual blocks: " << problem.NumResidualBlocks()
         << " Residuals: " << problem.NumResiduals() << " " << ri << " " << residuals.size()
         << std::endl
-        << " Total good matches: "
-        << " " << good_matches[0].size()
-        << " " << good_matches[1].size()
-        << " " << good_matches[2].size()
-        << " " << good_matches[3].size()
-        << " " << residual_type[0].size()
-        << " " << residual_type[1].size()
-        << " " << residual_type[2].size()
-        << " " << residual_type[3].size()
-        << std::endl;
+        << " Total good matches: ";
+    for(int cam=0; cam<num_cams; cam++) {
+        std::cerr << " " << good_matches[cam].size();
+    }
+    for(int cam=0; cam<num_cams; cam++) {
+        std::cerr << " " << residual_type[cam].size();
+    }
+    std::cerr << std::endl;
     if(residuals_3D3D.size())
-    std::cerr << "Residual 3D3D:"
-        << " median " << std::fixed << std::setprecision(10) << residuals_3D3D[residuals_3D3D.size()/2]
-        << " mean " << std::fixed << std::setprecision(10) << sum_3D3D/residuals_3D3D.size()
-        << " count " << residuals_3D3D.size() << std::endl;
+        std::cerr << "Residual 3D3D:"
+            << " median " << std::fixed << std::setprecision(10) << residuals_3D3D[residuals_3D3D.size()/2]
+            << " mean " << std::fixed << std::setprecision(10) << sum_3D3D/residuals_3D3D.size()
+            << " count " << residuals_3D3D.size() << std::endl;
     if(residuals_3D2D.size())
-    std::cerr << "Residual 3D2D:"
-        << " median " << std::fixed << std::setprecision(10) << residuals_3D2D[residuals_3D2D.size()/2]
-        << " mean " << std::fixed << std::setprecision(10) << sum_3D2D/residuals_3D2D.size()
-        << " count " << residuals_3D2D.size() << std::endl;
+        std::cerr << "Residual 3D2D:"
+            << " median " << std::fixed << std::setprecision(10) << residuals_3D2D[residuals_3D2D.size()/2]
+            << " mean " << std::fixed << std::setprecision(10) << sum_3D2D/residuals_3D2D.size()
+            << " count " << residuals_3D2D.size() << std::endl;
     if(residuals_2D3D.size())
-    std::cerr << "Residual 2D3D:"
-        << " median " << std::fixed << std::setprecision(10) << residuals_2D3D[residuals_2D3D.size()/2]
-        << " mean " << std::fixed << std::setprecision(10) << sum_2D3D/residuals_2D3D.size()
-        << " count " << residuals_2D3D.size() << std::endl;
+        std::cerr << "Residual 2D3D:"
+            << " median " << std::fixed << std::setprecision(10) << residuals_2D3D[residuals_2D3D.size()/2]
+            << " mean " << std::fixed << std::setprecision(10) << sum_2D3D/residuals_2D3D.size()
+            << " count " << residuals_2D3D.size() << std::endl;
     if(residuals_2D2D.size())
-    std::cerr << "Residual 2D2D:"
-        << " median " << std::fixed << std::setprecision(10) << residuals_2D2D[residuals_2D2D.size()/2]
-        << " mean " << std::fixed << std::setprecision(10) << sum_2D2D/residuals_2D2D.size()
-        << " count " << residuals_2D2D.size() << std::endl;
+        std::cerr << "Residual 2D2D:"
+            << " median " << std::fixed << std::setprecision(10) << residuals_2D2D[residuals_2D2D.size()/2]
+            << " mean " << std::fixed << std::setprecision(10) << sum_2D2D/residuals_2D2D.size()
+            << " count " << residuals_2D2D.size() << std::endl;
     if(residuals_3DPD.size())
-    std::cerr << "Residual 3DPD:"
-        << " median " << std::fixed << std::setprecision(10) << residuals_3DPD[residuals_3DPD.size()/2]
-        << " mean " << std::fixed << std::setprecision(10) << sum_3DPD/residuals_3DPD.size()
-        << " count " << residuals_3DPD.size() << std::endl;
+        std::cerr << "Residual 3DPD:"
+            << " median " << std::fixed << std::setprecision(10) << residuals_3DPD[residuals_3DPD.size()/2]
+            << " mean " << std::fixed << std::setprecision(10) << sum_3DPD/residuals_3DPD.size()
+            << " count " << residuals_3DPD.size() << std::endl;
 }

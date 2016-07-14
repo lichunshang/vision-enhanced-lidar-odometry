@@ -1,27 +1,29 @@
 #pragma once
 
-const int num_cams = 4,
+const int num_cams = 2, // number of cameras we use
+    num_cams_actual = 4, // number of cameras actually available in dataset
     lkt_window = 21,
-    corner_count = 1000, // number of features
+    lkt_pyramid = 4,
+    corner_count = 3000, // number of features
     icp_skip = 100,
-    icp_iterations = 2,
-    detect_every = 3; // detect new features every this number of frames
+    f2f_iterations = 4,
+    detect_every = 1; // detect new features every this number of frames
 
-const double PI = 3.1415926535897932384626433832795028,
-    flow_outlier = 10000, // pixels^2, squared distance of optical flow
-    quality_level = 0.005, // good features to track quality
-    min_distance = 10, // pixel distance between nearest features
+const double
+    flow_outlier = 20000, // pixels^2, squared distance of optical flow
+    quality_level = 0.01, // good features to track quality
+    min_distance = 7, // pixel distance between nearest features
     weight_3D2D = 10,
     weight_2D2D = 500,
     weight_3DPD = 3, // there are more of them
-    loss_thresh_3D2D = 0.01, // reprojection error, canonical camera units
-    loss_thresh_2D2D = 0.00002,
+    loss_thresh_3D2D = 0.02, // reprojection error, canonical camera units
+    loss_thresh_2D2D = 0.00004,
     loss_thresh_3DPD = 0.1, // physical distance, meters
     loss_thresh_3D3D = 0.05, // physical distance, meters
     match_thresh = 30, // bits, hamming distance for FREAK features
     depth_assoc_thresh = 0.015, // canonical camera units
     z_weight = 0.6,
-    outlier_reject = 7.0,
+    outlier_reject = 10.0,
     correspondence_thresh_icp = 1,
     icp_norm_condition = 1e-5;
 
@@ -32,6 +34,8 @@ std::vector<Eigen::Matrix<float, 3, 4>,
     Eigen::aligned_allocator<Eigen::Matrix<float, 3, 4>>> cam_mat;
 std::vector<Eigen::Matrix3f,
     Eigen::aligned_allocator<Eigen::Matrix3f>> cam_intrinsic;
+std::vector<Eigen::Matrix3f,
+    Eigen::aligned_allocator<Eigen::Matrix3f>> cam_intrinsic_inv;
 std::vector<Eigen::Vector3f,
     Eigen::aligned_allocator<Eigen::Vector3f>> cam_trans;
 Eigen::Matrix4f velo_to_cam, cam_to_velo;
@@ -50,7 +54,7 @@ void loadCalibration(
     std::ifstream calib_stream(calib_path);
     std::string P;
     velo_to_cam = Eigen::Matrix4f::Identity();
-    for(int cam=0; cam<num_cams; cam++) {
+    for(int cam=0; cam<num_cams_actual; cam++) {
         calib_stream >> P;
         cam_mat.push_back(Eigen::Matrix<float, 3, 4>());
         for(int i=0; i<3; i++) {
@@ -64,6 +68,7 @@ void loadCalibration(
         Eigen::Vector3f t = Kinv * Kt;
         cam_trans.push_back(t);
         cam_intrinsic.push_back(K);
+        cam_intrinsic_inv.push_back(K.inverse());
 
         Eigen::Vector3f min_pt;
         min_pt << 0, 0, 1;
