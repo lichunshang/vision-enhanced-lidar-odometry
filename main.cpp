@@ -42,6 +42,7 @@
 #define VISUALIZE
 //#define ENABLE_ICP
 #define ENABLE_2D2D
+//#define ENABLE_3D2D
 
 #include "utility.h"
 #include "kitti.h"
@@ -70,8 +71,8 @@ int main(int argc, char** argv) {
 
     // FREAK feature descriptor
     cv::Ptr<cv::xfeatures2d::FREAK> freak = cv::xfeatures2d::FREAK::create(
-            false, // not orientation normalized
-            false // not scale normalized
+            false, // orientation normalization
+            false // scale normalization
             );
     // good features to detect
     cv::Ptr<cv::GFTTDetector> gftt = cv::GFTTDetector::create(
@@ -203,6 +204,7 @@ int main(int argc, char** argv) {
             // good matches have outliers removed during optimization
             std::vector<std::vector<std::pair<int, int>>> matches(num_cams);
             std::vector<std::vector<std::pair<int, int>>> good_matches(num_cams);
+            std::vector<std::vector<ResidualType>> residual_type(num_cams);
             ScanData *sd_prev = lru.get(dataset, frame);
             const auto &scans_prev = sd_prev->scans;
             const auto &trees = sd_prev->trees;
@@ -218,7 +220,8 @@ int main(int argc, char** argv) {
                     frame,
                     frame-1,
                     transform,
-                    good_matches);
+                    good_matches,
+                    residual_type);
             double end = clock()/double(CLOCKS_PER_SEC);
             std::cerr << "Frame (" << dataset << "):"
                 << std::setw(5) << frame+1 << "/" << num_frames << ", "
@@ -235,28 +238,21 @@ int main(int argc, char** argv) {
             cv::Mat draw;
             cv::Mat img = loadImage(dataset, cam, frame);
             cvtColor(img, draw, cv::COLOR_GRAY2BGR);
+            auto &K = cam_intrinsic[cam];
             //cv::drawKeypoints(img, keypoints[frame], draw);
+            /*
             for(int k=0; k<keypoints[cam][frame].size(); k++) {
-                auto p = keypoints[cam][frame][k];
-                Eigen::Vector3f pe;
-                pe << p.x, p.y, 1;
-                pe = cam_intrinsic[cam] * pe;
-                cv::Point2f pp(pe(0)/pe(2), pe(1)/pe(2));
+                auto p = keypoints_p[cam][frame][k];
                 if(has_depth[cam][frame][k] != -1) {
-                    cv::circle(draw, pp, 2, cv::Scalar(0, 0, 255), -1, 8, 0);
+                    cv::circle(draw, p, 2, cv::Scalar(0, 0, 255), -1, 8, 0);
                 } else {
-                    cv::circle(draw, pp, 2, cv::Scalar(255, 200, 0), -1, 8, 0);
+                    cv::circle(draw, p, 2, cv::Scalar(255, 200, 0), -1, 8, 0);
                 }
             }
-
-            /*
             for(int s=0, _s = projection.size(); s<_s; s++) {
                 auto P = projection[s];
                 for(auto p : P) {
-                    Eigen::Vector3f pe;
-                    pe << p.x, p.y, 1;
-                    pe = cam_intrinsic[cam] * pe;
-                    cv::Point2f pp(pe(0)/pe(2), pe(1)/pe(2));
+                    auto pp = canonical2pixel(p, K);
                     cv::circle(draw, pp, 1,
                             cv::Scalar(0, 128, 0), -1, 8, 0);
                 }
@@ -264,34 +260,43 @@ int main(int argc, char** argv) {
             */
 
             for(auto m : matches[cam]) {
-                auto p1 = keypoints[cam][frame][m.first];
-                auto p2 = keypoints[cam][frame-1][m.second];
-                Eigen::Vector3f pe1;
-                pe1 << p1.x, p1.y, 1;
-                pe1 = cam_intrinsic[cam] * pe1;
-                Eigen::Vector3f pe2;
-                pe2 << p2.x, p2.y, 1;
-                pe2 = cam_intrinsic[cam] * pe2;
-                cv::Point2f pp1(pe1(0)/pe1(2), pe1(1)/pe1(2));
-                cv::Point2f pp2(pe2(0)/pe2(2), pe2(1)/pe2(2));
-                cv::arrowedLine(draw, pp1, pp2,
-                        cv::Scalar(255, 0, 255));
+                auto p1 = keypoints_p[cam][frame][m.first];
+                auto p2 = keypoints_p[cam][frame-1][m.second];
+                cv::arrowedLine(draw, p1, p2,
+                        cv::Scalar(0, 255, 255), 2, CV_AA);
             }
 
-            for(auto m : good_matches[cam]) {
-                auto p1 = keypoints[cam][frame][m.first];
-                auto p2 = keypoints[cam][frame-1][m.second];
-                Eigen::Vector3f pe1;
-                pe1 << p1.x, p1.y, 1;
-                pe1 = cam_intrinsic[cam] * pe1;
-                Eigen::Vector3f pe2;
-                pe2 << p2.x, p2.y, 1;
-                pe2 = cam_intrinsic[cam] * pe2;
-                cv::Point2f pp1(pe1(0)/pe1(2), pe1(1)/pe1(2));
-                cv::Point2f pp2(pe2(0)/pe2(2), pe2(1)/pe2(2));
-                cv::arrowedLine(draw, pp1, pp2,
-                        cv::Scalar(0, 255, 0));
+            for(int i=0; i<good_matches[cam].size(); i++) {
+                auto m = good_matches[cam][i];
+                auto p1 = keypoints_p[cam][frame][m.first];
+                auto p2 = keypoints_p[cam][frame-1][m.second];
+                cv::Scalar color = cv::Scalar(0, 255, 255);
+                switch(residual_type[cam][i]) {
+                    case RESIDUAL_3D3D:
+                        color = cv::Scalar(0, 0, 255);
+                        break;
+                    case RESIDUAL_3D2D:
+                        color = cv::Scalar(0, 250, 0);
+                        break;
+                    case RESIDUAL_2D2D:
+                        color = cv::Scalar(255, 200, 0);
+                        break;
+                }
+                cv::arrowedLine(draw, p1, p2,
+                        color, 2, CV_AA);
             }
+
+            /*
+            // Draw stereo matches
+            std::vector<std::pair<int, int>> intercamera_matches;
+            matchUsingId(keypoint_ids, 0, 1, frame, frame,
+                    intercamera_matches);
+            for(auto m : intercamera_matches) {
+                auto p1 = keypoints_p[0][frame][m.first];
+                auto p2 = keypoints_p[1][frame][m.second];
+                cv::line(draw, p1, p2, cv::Scalar(255, 0, 255), 2, CV_AA);
+            }
+            */
             cv::imshow(video, draw);
             cvWaitKey(1);
 #endif

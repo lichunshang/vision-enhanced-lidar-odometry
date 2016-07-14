@@ -204,6 +204,10 @@ struct cost2D2D {
         T tt_x = -tt[0] + x[3] + T(t_x),
           tt_y = -tt[1] + x[4] + T(t_y),
           tt_z = -tt[2] + x[5] + T(t_z);
+        T tn = sqrt(tt_x*tt_x + tt_y*tt_y + tt_z*tt_z);
+        tt_x /= tn;
+        tt_y /= tn;
+        tt_z /= tn;
         residual[0] =
                 M[0] * (-s_y * tt_z + tt_y) +
                 M[1] * ( s_x * tt_z - tt_x) + 

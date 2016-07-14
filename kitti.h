@@ -6,7 +6,7 @@ const int num_cams = 2, // number of cameras we use
     lkt_pyramid = 4,
     corner_count = 3000, // number of features
     icp_skip = 100,
-    f2f_iterations = 4,
+    f2f_iterations = 2,
     detect_every = 1; // detect new features every this number of frames
 
 const double
@@ -20,7 +20,7 @@ const double
     loss_thresh_2D2D = 0.00004,
     loss_thresh_3DPD = 0.1, // physical distance, meters
     loss_thresh_3D3D = 0.05, // physical distance, meters
-    match_thresh = 30, // bits, hamming distance for FREAK features
+    match_thresh = 28, // bits, hamming distance for FREAK features
     depth_assoc_thresh = 0.015, // canonical camera units
     z_weight = 0.6,
     outlier_reject = 10.0,

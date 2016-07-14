@@ -357,15 +357,12 @@ std::vector<int> featureDepthAssociation(
                                 < depth_assoc_thresh
                             ) {
                         /*
-                         Perform linear interpolation using four points:
-
-                         s-1, last_interp ----- interp2 ----- s, last_interp+1
-                                                   |
-                                                   |
-                                                   kp
-                                                   |
-                                                   |
-                              s, mid ---------- interp1 --------- s, mid+1
+                         * Perform linear interpolation using four points:
+                         * s-1, last_interp ----- interp2 ----- s, last_interp+1
+                         *                           |
+                         *                           kp
+                         *                           |
+                         *      s, mid ---------- interp1 --------- s, mid+1
                          */
                         /*
                         std::cerr << "depth association: " << kp
@@ -482,21 +479,31 @@ void matchFeatures(
 
 void matchUsingId(
         const std::vector<std::vector<std::vector<int>>> &keypoint_ids,
+        const int cam1,
+        const int cam2,
+        const int frame1,
+        const int frame2,
+        std::vector<std::pair<int, int>> &matches
+        ) {
+    std::map<int, int> id2ind;
+    for(int ind = 0; ind < keypoint_ids[cam1][frame1].size(); ind++) {
+        int id = keypoint_ids[cam1][frame1][ind];
+        id2ind[id] = ind;
+    }
+    for(int ind = 0; ind < keypoint_ids[cam2][frame2].size(); ind++) {
+        int id = keypoint_ids[cam2][frame2][ind];
+        if(id2ind.count(id))
+            matches.push_back(std::make_pair(id2ind[id], ind));
+    }
+}
+void matchUsingId(
+        const std::vector<std::vector<std::vector<int>>> &keypoint_ids,
         const int frame1,
         const int frame2,
         std::vector<std::vector<std::pair<int, int>>> &matches
         ) {
     for(int cam=0; cam<num_cams; cam++) {
-        std::map<int, int> id2ind;
-        for(int ind = 0; ind < keypoint_ids[cam][frame1].size(); ind++) {
-            int id = keypoint_ids[cam][frame1][ind];
-            id2ind[id] = ind;
-        }
-        for(int ind = 0; ind < keypoint_ids[cam][frame2].size(); ind++) {
-            int id = keypoint_ids[cam][frame2][ind];
-            if(id2ind.count(id))
-                matches[cam].push_back(std::make_pair(id2ind[id], ind));
-        }
+        matchUsingId(keypoint_ids, cam, cam, frame1, frame2, matches[cam]);
     }
 }
 
@@ -517,7 +524,8 @@ Eigen::Matrix4d frameToFrame(
         const int frame1,
         const int frame2,
         double transform[6],
-        std::vector<std::vector<std::pair<int, int>>> &good_matches
+        std::vector<std::vector<std::pair<int, int>>> &good_matches,
+        std::vector<std::vector<ResidualType>> &residual_type
         ) {
 
     for(int iter = 1; iter <= f2f_iterations; iter++) {
@@ -525,11 +533,11 @@ Eigen::Matrix4d frameToFrame(
         problem_options.enable_fast_removal = true;
         ceres::Problem problem(problem_options);
 
-        std::vector<std::vector<ResidualType>> residual_type(num_cams);
 
         // Visual odometry
         for(int cam = 0; cam<num_cams; cam++) {
             good_matches[cam].clear();
+            residual_type[cam].clear();
             const std::vector<std::pair<int, int>> &mc = matches[cam];
             for(int i=0; i<mc.size(); i++) {
                 int point1 = mc[i].first,
@@ -607,6 +615,7 @@ Eigen::Matrix4d frameToFrame(
                     good_matches[cam].push_back(std::make_pair(point1, point2));
 #endif
                 }
+#ifdef ENABLE_3D2D
                 if(has_depth[cam][frame1][point1] != -1
                         /*&& has_depth[cam][frame2][point2] == -1*/) {
                     // 3D 2D
@@ -682,6 +691,7 @@ Eigen::Matrix4d frameToFrame(
                     residual_type[cam].push_back(RESIDUAL_2D3D);
                     good_matches[cam].push_back(std::make_pair(point1, point2));
                 }
+#endif
             }
         }
 
@@ -702,16 +712,16 @@ Eigen::Matrix4d frameToFrame(
                 pcl::PointXYZ pointM_untransformed = pointM;
                 util::transform_point(pointM, transform);
                 /*
-                   Point-to-plane ICP where plane is defined by
-                   three Nearest Points (np):
-                   np_i     np_k
-                   np_s_i ..... * ..... * .....
-                   \     /
-                   \   /
-                   \ /
-                   np_s_j ......... * .......
-                   np_j
-                   */
+                 * Point-to-plane ICP where plane is defined by
+                 * three Nearest Points (np):
+                 *            np_i     np_k
+                 * np_s_i ..... * ..... * .....
+                 *               \     /
+                 *                \   /
+                 *                 \ /
+                 * np_s_j ......... * .......
+                 *                 np_j
+                 */
                 int np_i = 0, np_j = 0, np_k = 0;
                 int np_s_i = -1, np_s_j = -1;
                 double np_dist_i = INF, np_dist_j = INF;
