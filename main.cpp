@@ -38,6 +38,7 @@
 
 #include <isam/isam.h>
 #include <isam/robust.h>
+#include <isam/slam_monocular.h>
 
 #define VISUALIZE
 //#define ENABLE_ICP
@@ -61,8 +62,6 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::string dataset = argv[1];
-    std::ofstream output;
-    output.open(("results/" + std::string(argv[1]) + ".txt").c_str());
     loadImage(dataset, 0, 0); // to set width and height
     loadCalibration(dataset);
     loadTimes(dataset);
@@ -117,6 +116,25 @@ int main(int argc, char** argv) {
     Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
     double transform[6] = {0, 0, 0, 0, 0, 1};
     ScansLRU lru;
+
+    // preliminaries for bundle adjustment
+    isam::Slam slam;
+    std::vector<std::vector<isam::Pose3d_Node*>> cam_nodes(num_cams);
+    std::vector<isam::Point3d_Node*> point_nodes;
+    std::vector<isam::MonocularCamera> monoculars(num_cams);
+    for(int cam=0; cam<num_cams; cam++) {
+        monoculars[cam] = isam::MonocularCamera(1, Eigen::Vector2d(0, 0));
+        for(int frame = 0; frame < num_frames; frame++) {
+            isam::Pose3d_Node* initial_node = new isam::Pose3d_Node();
+            cam_nodes[cam].push_back(initial_node);
+            slam.add_node(initial_node);
+        }
+    }
+    isam::Noise noiseless6 = isam::Information(1000. * isam::eye(6));
+    isam::Noise noisy6 = isam::Information(1 * isam::eye(6));
+    isam::Pose3d origin;
+    isam::Pose3d_Factor* prior = new isam::Pose3d_Factor(cam_nodes[0][0], origin, noiseless6);
+    slam.add_factor(prior);
 
     for(int frame = 0; frame < num_frames; frame++) {
         auto start = clock()/double(CLOCKS_PER_SEC);
@@ -216,7 +234,7 @@ int main(int argc, char** argv) {
             const auto &trees = sd_prev->trees;
             matchUsingId(keypoint_ids, frame, frame-1, matches);
             std::cerr << "Matches using id: " << matches[0].size() << std::endl;
-            pose *= frameToFrame(
+            Eigen::Matrix4d dpose = frameToFrame(
                     matches,
                     keypoints,
                     kp_with_depth,
@@ -229,6 +247,7 @@ int main(int argc, char** argv) {
                     transform,
                     good_matches,
                     residual_type);
+            pose *= dpose;
             double end = clock()/double(CLOCKS_PER_SEC);
             std::cerr << "Frame (" << dataset << "):"
                 << std::setw(5) << frame+1 << "/" << num_frames << ", "
@@ -336,11 +355,75 @@ int main(int argc, char** argv) {
                 << " " << has_depth[cam][frame][10]
                 << std::endl;
                 */
-        }
-        output_line(pose, output);
-        keypoint_obs.resize(id_counter);
-        // TODO: triangulate keypoint positions
+            keypoint_obs.resize(id_counter);
+            // TODO: triangulate keypoint positions
 
+            // iSAM time!
+            isam::Pose3d_Pose3d_Factor* odom_factor = new isam::Pose3d_Pose3d_Factor(
+                    cam_nodes[0][frame-1],
+                    cam_nodes[0][frame],
+                    isam::Pose3d(dpose),
+                    noisy6
+                    );
+            slam.add_factor(odom_factor);
+        }
+        for(int cam = 1; cam<num_cams; cam++) {
+            isam::Pose3d_Pose3d_Factor* cam_factor = new isam::Pose3d_Pose3d_Factor(
+                    cam_nodes[0][frame],
+                    cam_nodes[cam][frame],
+                    isam::Pose3d(cam_pose[cam].cast<double>()),
+                    noiseless6
+                    );
+        }
+        while(point_nodes.size() <= id_counter) {
+            isam::Point3d_Node* point_node = new isam::Point3d_Node();
+            point_nodes.push_back(point_node);
+            slam.add_node(point_node);
+        }
+        for(int cam=0; cam<num_cams; cam++) {
+            for(int i=0; i<keypoints[cam][frame].size(); i++) {
+                if(has_depth[cam][frame][i] == -1) {
+                    isam::MonocularMeasurement measurement(
+                            keypoints[cam][frame][i].x,
+                            keypoints[cam][frame][i].y
+                            );
+                    isam::Noise noise2 = isam::Information(1 * isam::eye(2));
+                    isam::Monocular_Factor* factor;
+                    factor = new isam::Monocular_Factor(
+                            cam_nodes[cam][frame],
+                            point_nodes[keypoint_ids[cam][frame][i]],
+                            &(monoculars[cam]),
+                            measurement,
+                            noise2
+                            );
+                    slam.add_factor(factor);
+                } else {
+                    isam::Noise noise3 = isam::Information(1 * isam::eye(3));
+                    auto p3 = kp_with_depth[cam][frame]->at(has_depth[cam][frame][i]);
+                    Eigen::Vector3d point3d = p3.getVector3fMap().cast<double>();
+                    isam::Pose3d_Point3d_Factor* factor = new isam::Pose3d_Point3d_Factor(
+                            cam_nodes[cam][frame],
+                            point_nodes[keypoint_ids[cam][frame][i]],
+                            isam::Point3d(point3d),
+                            noise3
+                            );
+                    slam.add_factor(factor);
+                }
+            }
+        }
+
+        if(frame > 10 && frame % 5 == 0) {
+            std::cerr << "Bundle adjusting" << std::endl;
+            isam::Properties prop = slam.properties();
+            prop.max_iterations = 100;
+            //prop.method = isam::DOG_LEG;
+            slam.set_properties(prop);
+            slam.batch_optimization();
+        }
+        std::ofstream output;
+        output.open(("results/" + std::string(argv[1]) + ".txt").c_str());
+        output_line(pose, output);
+        output.close();
     }
     return 0;
 }

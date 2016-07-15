@@ -38,6 +38,8 @@ std::vector<Eigen::Matrix3f,
     Eigen::aligned_allocator<Eigen::Matrix3f>> cam_intrinsic_inv;
 std::vector<Eigen::Vector3f,
     Eigen::aligned_allocator<Eigen::Vector3f>> cam_trans;
+std::vector<Eigen::Matrix4f,
+    Eigen::aligned_allocator<Eigen::Vector3f>> cam_pose;
 Eigen::Matrix4f velo_to_cam, cam_to_velo;
 std::vector<double> min_x, max_x, min_y, max_y;
 
@@ -69,6 +71,11 @@ void loadCalibration(
         cam_trans.push_back(t);
         cam_intrinsic.push_back(K);
         cam_intrinsic_inv.push_back(K.inverse());
+
+        cam_pose.push_back(Eigen::Matrix4f::Identity());
+        cam_pose[cam](0, 3) = t(0);
+        cam_pose[cam](1, 3) = t(1);
+        cam_pose[cam](2, 3) = t(2);
 
         Eigen::Vector3f min_pt;
         min_pt << 0, 0, 1;
