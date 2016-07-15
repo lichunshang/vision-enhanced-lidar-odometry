@@ -592,7 +592,6 @@ Eigen::Matrix4d frameToFrame(
         problem_options.enable_fast_removal = true;
         ceres::Problem problem(problem_options);
 
-
         // Visual odometry
         for(int cam = 0; cam<num_cams; cam++) {
             good_matches[cam].clear();
@@ -756,115 +755,117 @@ Eigen::Matrix4d frameToFrame(
 
         // Point set registration
 #ifdef ENABLE_ICP
-        /*
-           std::vector<ceres::ResidualBlockId> icp_blocks;
+        std::vector<ceres::ResidualBlockId> icp_blocks;
 
-           while(icp_blocks.size() > 0) {
-           auto bid = icp_blocks.back();
-           icp_blocks.pop_back();
-           problem.RemoveResidualBlock(bid);
-           }
-           */
-        for(int sm = 0; sm < scans_M.size(); sm++) {
-            for(int smi = 0; smi < scans_M[sm]->size(); smi+= icp_skip) {
-                pcl::PointXYZ pointM = scans_M[sm]->at(smi);
-                pcl::PointXYZ pointM_untransformed = pointM;
-                util::transform_point(pointM, transform);
-                /*
-                 * Point-to-plane ICP where plane is defined by
-                 * three Nearest Points (np):
-                 *            np_i     np_k
-                 * np_s_i ..... * ..... * .....
-                 *               \     /
-                 *                \   /
-                 *                 \ /
-                 * np_s_j ......... * .......
-                 *                 np_j
-                 */
-                int np_i = 0, np_j = 0, np_k = 0;
-                int np_s_i = -1, np_s_j = -1;
-                double np_dist_i = INF, np_dist_j = INF;
-                for(int ss = 0; ss < kd_trees.size(); ss++) {
-                    std::vector<int> id(1);
-                    std::vector<float> dist2(1);
-                    if(kd_trees[ss].nearestKSearch(pointM, 1, id, dist2) <= 0 ||
-                            dist2[0] > correspondence_thresh_icp/iter/iter/iter/iter) {
+        for(int icp_iter = 0; icp_iter < icp_iterations; icp_iter++) {
+            while(icp_blocks.size() > 0) {
+                auto bid = icp_blocks.back();
+                icp_blocks.pop_back();
+                problem.RemoveResidualBlock(bid);
+            }
+            for(int sm = 0; sm < scans_M.size(); sm++) {
+                for(int smi = 0; smi < scans_M[sm]->size(); smi+= icp_skip) {
+                    pcl::PointXYZ pointM = scans_M[sm]->at(smi);
+                    pcl::PointXYZ pointM_untransformed = pointM;
+                    util::transform_point(pointM, transform);
+                    /*
+                     * Point-to-plane ICP where plane is defined by
+                     * three Nearest Points (np):
+                     *            np_i     np_k
+                     * np_s_i ..... * ..... * .....
+                     *               \     /
+                     *                \   /
+                     *                 \ /
+                     * np_s_j ......... * .......
+                     *                 np_j
+                     */
+                    int np_i = 0, np_j = 0, np_k = 0;
+                    int np_s_i = -1, np_s_j = -1;
+                    double np_dist_i = INF, np_dist_j = INF;
+                    for(int ss = 0; ss < kd_trees.size(); ss++) {
+                        std::vector<int> id(1);
+                        std::vector<float> dist2(1);
+                        if(kd_trees[ss].nearestKSearch(pointM, 1, id, dist2) <= 0 ||
+                                dist2[0] > correspondence_thresh_icp/iter/iter/iter/iter) {
+                            continue;
+                        }
+                        pcl::PointXYZ np = scans_S[ss]->at(id[0]);
+
+                        util::subtract_assign(np, pointM);
+                        double d = util::norm2(np);
+                        if(d < np_dist_i) {
+                            np_dist_j = np_dist_i;
+                            np_j = np_i;
+                            np_s_j = np_s_i;
+                            np_dist_i = d;
+                            np_i = id[0];
+                            np_s_i = ss;
+                        } else if(d < np_dist_j) {
+                            np_dist_j = d;
+                            np_j = id[0];
+                            np_s_j = ss;
+                        }
+                    }
+                    if(np_s_i == -1 || np_s_j == -1) {
                         continue;
                     }
-                    pcl::PointXYZ np = scans_S[ss]->at(id[0]);
-
-                    util::subtract_assign(np, pointM);
-                    double d = util::norm2(np);
-                    if(d < np_dist_i) {
-                        np_dist_j = np_dist_i;
-                        np_j = np_i;
-                        np_s_j = np_s_i;
-                        np_dist_i = d;
-                        np_i = id[0];
-                        np_s_i = ss;
-                    } else if(d < np_dist_j) {
-                        np_dist_j = d;
-                        np_j = id[0];
-                        np_s_j = ss;
+                    int np_k_n = scans_S[np_s_i]->size(),
+                        np_k_1p = (np_i+1) % np_k_n,
+                        np_k_2p = (np_i-1 + np_k_n) % np_k_n;
+                    pcl::PointXYZ np_k_1 = scans_S[np_s_i]->at(np_k_1p),
+                        np_k_2 = scans_S[np_s_i]->at(np_k_2p);
+                    util::subtract_assign(np_k_1, pointM);
+                    util::subtract_assign(np_k_2, pointM);
+                    if(util::norm2(np_k_1) < util::norm2(np_k_2)) {
+                        np_k = np_k_1p;
+                    } else {
+                        np_k = np_k_2p;
                     }
+                    pcl::PointXYZ s0, s1, s2;
+                    s0 = scans_S[np_s_i]->at(np_i);
+                    s1 = scans_S[np_s_j]->at(np_j);
+                    s2 = scans_S[np_s_i]->at(np_k);
+                    Eigen::Vector3f
+                        v0 = s0.getVector3fMap(),
+                           v1 = s1.getVector3fMap(),
+                           v2 = s2.getVector3fMap();
+                    Eigen::Vector3f N = (v1 - v0).cross(v2 - v0);
+                    if(N.norm() < icp_norm_condition) continue;
+                    N /= N.norm();
+                    ceres::CostFunction* cost_function =
+                        new ceres::AutoDiffCostFunction<cost3DPD, 1, 6>(
+                                new cost3DPD(
+                                    pointM_untransformed.x,
+                                    pointM_untransformed.y,
+                                    pointM_untransformed.z,
+                                    N[0], N[1], N[2],
+                                    v0[0], v0[1], v0[2]
+                                    )
+                                );
+                    auto bid = problem.AddResidualBlock(
+                            cost_function,
+                            new ceres::ScaledLoss(
+                                new ceres::CauchyLoss(loss_thresh_3DPD),
+                                weight_3DPD,
+                                ceres::TAKE_OWNERSHIP),
+                            transform);
+                    icp_blocks.push_back(bid);
                 }
-                if(np_s_i == -1 || np_s_j == -1) {
-                    continue;
-                }
-                int np_k_n = scans_S[np_s_i]->size(),
-                    np_k_1p = (np_i+1) % np_k_n,
-                    np_k_2p = (np_i-1 + np_k_n) % np_k_n;
-                pcl::PointXYZ np_k_1 = scans_S[np_s_i]->at(np_k_1p),
-                    np_k_2 = scans_S[np_s_i]->at(np_k_2p);
-                util::subtract_assign(np_k_1, pointM);
-                util::subtract_assign(np_k_2, pointM);
-                if(util::norm2(np_k_1) < util::norm2(np_k_2)) {
-                    np_k = np_k_1p;
-                } else {
-                    np_k = np_k_2p;
-                }
-                pcl::PointXYZ s0, s1, s2;
-                s0 = scans_S[np_s_i]->at(np_i);
-                s1 = scans_S[np_s_j]->at(np_j);
-                s2 = scans_S[np_s_i]->at(np_k);
-                Eigen::Vector3f
-                    v0 = s0.getVector3fMap(),
-                       v1 = s1.getVector3fMap(),
-                       v2 = s2.getVector3fMap();
-                Eigen::Vector3f N = (v1 - v0).cross(v2 - v0);
-                if(N.norm() < icp_norm_condition) continue;
-                N /= N.norm();
-                ceres::CostFunction* cost_function =
-                    new ceres::AutoDiffCostFunction<cost3DPD, 1, 6>(
-                            new cost3DPD(
-                                pointM_untransformed.x,
-                                pointM_untransformed.y,
-                                pointM_untransformed.z,
-                                N[0], N[1], N[2],
-                                v0[0], v0[1], v0[2]
-                                )
-                            );
-                auto bid = problem.AddResidualBlock(
-                        cost_function,
-                        new ceres::ScaledLoss(
-                            new ceres::CauchyLoss(loss_thresh_3DPD),
-                            weight_3DPD,
-                            ceres::TAKE_OWNERSHIP),
-                        transform);
-                //icp_blocks.push_back(bid);
             }
+#endif
+            //residualStats(problem, good_matches, residual_type);
+            ceres::Solver::Options options;
+            options.linear_solver_type = ceres::DENSE_SCHUR;
+            options.minimizer_progress_to_stdout = false;
+            options.num_threads = 1;
+            ceres::Solver::Summary summary;
+            ceres::Solve(options, &problem, &summary);
+            if(f2f_iterations - iter == 0) {
+                residualStats(problem, good_matches, residual_type);
+            }
+#ifdef ENABLE_ICP
         }
 #endif
-        //residualStats(problem, good_matches, residual_type);
-        ceres::Solver::Options options;
-        options.linear_solver_type = ceres::DENSE_SCHUR;
-        options.minimizer_progress_to_stdout = false;
-        options.num_threads = 1;
-        ceres::Solver::Summary summary;
-        ceres::Solve(options, &problem, &summary);
-        if(f2f_iterations - iter == 0) {
-            residualStats(problem, good_matches, residual_type);
-        }
     }
 
     /*

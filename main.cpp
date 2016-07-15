@@ -131,6 +131,9 @@ int main(int argc, char** argv) {
 
     // preliminaries for bundle adjustment
     isam::Slam slam;
+    isam::Properties prop = slam.properties();
+    prop.max_iterations = 50;
+    slam.set_properties(prop);
     std::vector<std::vector<isam::Pose3d_Node*>> cam_nodes(num_cams);
     std::vector<isam::Point3d_Node*> point_nodes;
     std::vector<isam::MonocularCamera> monoculars(num_cams);
@@ -436,55 +439,59 @@ int main(int argc, char** argv) {
         std::cerr << zxcv << std::endl;
         std::cerr << "Features: " << id_counter+1 << std::endl;
 
+        std::set<int> ids_seen;
         for(int cam=0; cam<num_cams; cam++) {
             for(int i=0; i<keypoints[cam][frame].size(); i++) {
                 int id = keypoint_ids[cam][frame][i];
-                if(keypoint_obs_count[id] > 1) {
-                    if(!keypoint_added[id]) {
-                        slam.add_node(point_nodes[id]);
-                        keypoint_added[id] = true;
-                    }
-                    for(auto obs3 : keypoint_obs3[id][cam]) {
-                        isam::Noise noise3 = isam::Information(1 * isam::eye(3));
-                        auto p3 = obs3.second;
-                        Eigen::Vector3d point3d = p3.getVector3fMap().cast<double>();
-                        isam::Pose3d_Point3d_Factor* factor = new isam::Pose3d_Point3d_Factor(
-                                cam_nodes[cam][frame],
-                                point_nodes[id],
-                                isam::Point3d(point3d),
-                                noise3
-                                );
-                        slam.add_factor(factor);
-                    }
-                    for(auto obs2 : keypoint_obs2[id][cam]) {
-                        isam::MonocularMeasurement measurement(
-                                obs2.second.x,
-                                obs2.second.y
-                                );
-                        isam::Noise noise2 = isam::Information(1 * isam::eye(2));
-                        isam::Monocular_Factor* factor;
-                        factor = new isam::Monocular_Factor(
-                                cam_nodes[cam][frame],
-                                point_nodes[id],
-                                &(monoculars[cam]),
-                                measurement,
-                                noise2
-                                );
-                        slam.add_factor(factor);
-                    }
-                    keypoint_obs3[id][cam].clear();
-                    keypoint_obs2[id][cam].clear();
-                }
+                ids_seen.insert(id);
             }
         }
+        for(auto id : ids_seen) {
+            if(keypoint_obs_count[id] <= 1) {
+                continue;
+            }
+            if(!keypoint_added[id]) {
+                slam.add_node(point_nodes[id]);
+                keypoint_added[id] = true;
+            }
+            for(int cam=0; cam<num_cams; cam++) {
+                for(auto obs3 : keypoint_obs3[id][cam]) {
+                    isam::Noise noise3 = isam::Information(1 * isam::eye(3));
+                    auto p3 = obs3.second;
+                    Eigen::Vector3d point3d = p3.getVector3fMap().cast<double>();
+                    isam::Pose3d_Point3d_Factor* factor = new isam::Pose3d_Point3d_Factor(
+                            cam_nodes[cam][obs3.first],
+                            point_nodes[id],
+                            isam::Point3d(point3d),
+                            noise3
+                            );
+                    slam.add_factor(factor);
+                }
+                keypoint_obs3[id][cam].clear();
+            }
+            for(int cam=0; cam<num_cams; cam++) {
+                for(auto obs2 : keypoint_obs2[id][cam]) {
+                    isam::MonocularMeasurement measurement(
+                            obs2.second.x,
+                            obs2.second.y
+                            );
+                    isam::Noise noise2 = isam::Information(1 * isam::eye(2));
+                    isam::Monocular_Factor* factor;
+                    factor = new isam::Monocular_Factor(
+                            cam_nodes[cam][obs2.first],
+                            point_nodes[id],
+                            &(monoculars[cam]),
+                            measurement,
+                            noise2
+                            );
+                    slam.add_factor(factor);
+                }
+                keypoint_obs2[id][cam].clear();
+            }
+        }
+        if(frame > 0) {
+            slam.update();
 
-        if(frame >= 10 && frame % 5 == 0) {
-            std::cerr << "Bundle adjusting post" << std::endl;
-            isam::Properties prop = slam.properties();
-            prop.max_iterations = 100;
-            //prop.method = isam::DOG_LEG;
-            slam.set_properties(prop);
-            slam.batch_optimization();
             std::ofstream output;
             output.open(("results/" + std::string(argv[1]) + ".txt").c_str());
             for(int i=0; i<=frame; i++) {
@@ -494,6 +501,16 @@ int main(int argc, char** argv) {
             }
             output.close();
         }
+        /*
+        if(frame >= 10 && frame % 5 == 0) {
+            std::cerr << "Bundle adjusting post" << std::endl;
+            isam::Properties prop = slam.properties();
+            prop.max_iterations = 100;
+            //prop.method = isam::DOG_LEG;
+            slam.set_properties(prop);
+            slam.batch_optimization();
+        }
+        */
     }
     return 0;
 }
