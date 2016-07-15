@@ -42,7 +42,7 @@
 #define VISUALIZE
 //#define ENABLE_ICP
 #define ENABLE_2D2D
-//#define ENABLE_3D2D
+#define ENABLE_3D2D
 
 #include "utility.h"
 #include "kitti.h"
@@ -103,6 +103,9 @@ int main(int argc, char** argv) {
     std::vector<cv::Mat> imgs(num_cams);
     std::vector<cv::Mat> img_prevs(num_cams);
 
+    // vector which maps from keypoint id to observed position
+    std::vector<std::vector<std::vector<cv::Point2f>>> keypoint_obs(num_cams);
+
     // counters for keypoint id, one for each camera
     int id_counter = 0;
 
@@ -115,7 +118,6 @@ int main(int argc, char** argv) {
     double transform[6] = {0, 0, 0, 0, 0, 1};
     ScansLRU lru;
 
-
     for(int frame = 0; frame < num_frames; frame++) {
         auto start = clock()/double(CLOCKS_PER_SEC);
 
@@ -127,8 +129,7 @@ int main(int argc, char** argv) {
 
         for(int cam = 0; cam<num_cams; cam++) {
             if(frame > 0) {
-                //for(int prev_cam = 0; prev_cam < num_cams; prev_cam++) {
-                int prev_cam = cam;
+                for(int prev_cam = 0; prev_cam < num_cams; prev_cam++) {
                     trackFeatures(
                             keypoints,
                             keypoints_p,
@@ -140,8 +141,10 @@ int main(int argc, char** argv) {
                             cam,
                             frame-1,
                             frame);
-                //}
+                }
             }
+        }
+        for(int cam = 0; cam<num_cams; cam++) {
             if(frame % detect_every == 0) {
                 detectFeatures(
                         keypoints[cam],
@@ -154,20 +157,23 @@ int main(int argc, char** argv) {
                         id_counter,
                         cam,
                         frame);
+                for(int other_cam = 0; other_cam < num_cams; other_cam++) {
+                    if(other_cam == cam) continue;
+                    trackFeatures(
+                            keypoints,
+                            keypoints_p,
+                            keypoint_ids,
+                            descriptors,
+                            imgs[cam],
+                            imgs[other_cam],
+                            cam,
+                            other_cam,
+                            frame,
+                            frame);
+                }
             }
-            if(cam != 0) {
-                trackFeatures(
-                        keypoints,
-                        keypoints_p,
-                        keypoint_ids,
-                        descriptors,
-                        imgs[0],
-                        imgs[cam],
-                        0,
-                        cam,
-                        frame,
-                        frame);
-            }
+        }
+        for(int cam = 0; cam<num_cams; cam++) {
             consolidateFeatures(
                     keypoints[cam][frame],
                     keypoints_p[cam][frame],
@@ -209,6 +215,7 @@ int main(int argc, char** argv) {
             const auto &scans_prev = sd_prev->scans;
             const auto &trees = sd_prev->trees;
             matchUsingId(keypoint_ids, frame, frame-1, matches);
+            std::cerr << "Matches using id: " << matches[0].size() << std::endl;
             pose *= frameToFrame(
                     matches,
                     keypoints,
@@ -234,74 +241,106 @@ int main(int argc, char** argv) {
             std::cerr << std::endl;
 
 #ifdef VISUALIZE
-            int cam = 1;
-            cv::Mat draw;
-            cv::Mat img = loadImage(dataset, cam, frame);
-            cvtColor(img, draw, cv::COLOR_GRAY2BGR);
-            auto &K = cam_intrinsic[cam];
-            //cv::drawKeypoints(img, keypoints[frame], draw);
-            /*
-            for(int k=0; k<keypoints[cam][frame].size(); k++) {
-                auto p = keypoints_p[cam][frame][k];
-                if(has_depth[cam][frame][k] != -1) {
-                    cv::circle(draw, p, 2, cv::Scalar(0, 0, 255), -1, 8, 0);
-                } else {
-                    cv::circle(draw, p, 2, cv::Scalar(255, 200, 0), -1, 8, 0);
+            std::vector<cv::Mat> draws(num_cams);
+            for(int cam=0; cam<num_cams; cam++) {
+                cv::Mat draw;
+                cv::Mat img = loadImage(dataset, cam, frame);
+                cvtColor(img, draw, cv::COLOR_GRAY2BGR);
+                auto &K = cam_intrinsic[cam];
+                //cv::drawKeypoints(img, keypoints[frame], draw);
+                for(int k=0; k<keypoints[cam][frame].size(); k++) {
+                    auto p = keypoints_p[cam][frame][k];
+                    if(has_depth[cam][frame][k] != -1) {
+                        cv::circle(draw, p, 2, cv::Scalar(0, 0, 255), -1, 8, 0);
+                    } else {
+                        cv::circle(draw, p, 2, cv::Scalar(255, 200, 0), -1, 8, 0);
+                    }
                 }
-            }
-            for(int s=0, _s = projection.size(); s<_s; s++) {
-                auto P = projection[s];
-                for(auto p : P) {
-                    auto pp = canonical2pixel(p, K);
-                    cv::circle(draw, pp, 1,
-                            cv::Scalar(0, 128, 0), -1, 8, 0);
+                /*
+                for(int s=0, _s = projection.size(); s<_s; s++) {
+                    auto P = projection[s];
+                    for(auto p : P) {
+                        auto pp = canonical2pixel(p, K);
+                        cv::circle(draw, pp, 1,
+                                cv::Scalar(0, 128, 0), -1, 8, 0);
+                    }
                 }
-            }
-            */
+                */
 
-            for(auto m : matches[cam]) {
-                auto p1 = keypoints_p[cam][frame][m.first];
-                auto p2 = keypoints_p[cam][frame-1][m.second];
-                cv::arrowedLine(draw, p1, p2,
-                        cv::Scalar(0, 255, 255), 2, CV_AA);
-            }
-
-            for(int i=0; i<good_matches[cam].size(); i++) {
-                auto m = good_matches[cam][i];
-                auto p1 = keypoints_p[cam][frame][m.first];
-                auto p2 = keypoints_p[cam][frame-1][m.second];
-                cv::Scalar color = cv::Scalar(0, 255, 255);
-                switch(residual_type[cam][i]) {
-                    case RESIDUAL_3D3D:
-                        color = cv::Scalar(0, 0, 255);
-                        break;
-                    case RESIDUAL_3D2D:
-                        color = cv::Scalar(0, 250, 0);
-                        break;
-                    case RESIDUAL_2D2D:
-                        color = cv::Scalar(255, 200, 0);
-                        break;
+                for(auto m : matches[cam]) {
+                    auto p1 = keypoints_p[cam][frame][m.first];
+                    auto p2 = keypoints_p[cam][frame-1][m.second];
+                    cv::arrowedLine(draw, p1, p2,
+                            cv::Scalar(0, 255, 255), 1, CV_AA);
                 }
-                cv::arrowedLine(draw, p1, p2,
-                        color, 2, CV_AA);
-            }
 
-            /*
-            // Draw stereo matches
-            std::vector<std::pair<int, int>> intercamera_matches;
-            matchUsingId(keypoint_ids, 0, 1, frame, frame,
-                    intercamera_matches);
-            for(auto m : intercamera_matches) {
-                auto p1 = keypoints_p[0][frame][m.first];
-                auto p2 = keypoints_p[1][frame][m.second];
-                cv::line(draw, p1, p2, cv::Scalar(255, 0, 255), 2, CV_AA);
+                for(int i=0; i<good_matches[cam].size(); i++) {
+                    auto m = good_matches[cam][i];
+                    auto p1 = keypoints_p[cam][frame][m.first];
+                    auto p2 = keypoints_p[cam][frame-1][m.second];
+                    cv::Scalar color = cv::Scalar(0, 0, 0);
+                    switch(residual_type[cam][i]) {
+                        case RESIDUAL_3D3D:
+                            color = cv::Scalar(0, 0, 255);
+                            break;
+                        case RESIDUAL_3D2D:
+                        case RESIDUAL_2D3D:
+                            color = cv::Scalar(0, 250, 0);
+                            break;
+                        case RESIDUAL_2D2D:
+                            color = cv::Scalar(255, 200, 0);
+                            break;
+                    }
+                    cv::arrowedLine(draw, p1, p2,
+                            color, 2, CV_AA);
+                }
+
+                // Draw stereo matches
+                std::vector<std::pair<int, int>> intercamera_matches;
+                matchUsingId(keypoint_ids, 0, 1, frame, frame,
+                        intercamera_matches);
+                for(auto m : intercamera_matches) {
+                    auto p1 = keypoints_p[0][frame][m.first];
+                    auto p2 = keypoints_p[1][frame][m.second];
+                    cv::line(draw, p1, p2, cv::Scalar(255, 0, 255), 1, CV_AA);
+                }
+                draw.copyTo(draws[cam]);
             }
-            */
-            cv::imshow(video, draw);
+            cv::Mat D;
+            vconcat(draws[0], draws[1], D);
+            cv::imshow(video, D);
             cvWaitKey(1);
 #endif
+            /*
+            removeSlightlyLessTerribleFeatures(
+                    keypoints,
+                    keypoints_p,
+                    kp_with_depth,
+                    keypoint_ids,
+                    descriptors,
+                    has_depth,
+                    frame,
+                    good_matches);
+            std::cerr << keypoints[cam][frame].size()
+                << " " << keypoints_p[cam][frame].size()
+                << " " << kp_with_depth[cam][frame]->size()
+                << " " << keypoint_ids[cam][frame].size()
+                << " " << descriptors[cam][frame].rows
+                << " " << has_depth[cam][frame].size()
+                << std::endl;
+            std::cerr << keypoints[cam][frame][0]
+                << " " << keypoints_p[cam][frame][10]
+                << " " << kp_with_depth[cam][frame]->at(10)
+                << " " << keypoint_ids[cam][frame][10]
+                << " " << descriptors[cam][frame].row(10)
+                << " " << has_depth[cam][frame][10]
+                << std::endl;
+                */
         }
         output_line(pose, output);
+        keypoint_obs.resize(id_counter);
+        // TODO: triangulate keypoint positions
+
     }
     return 0;
 }

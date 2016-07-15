@@ -267,6 +267,63 @@ void removeTerribleFeatures(
     tmp_descriptors.copyTo(descriptors);
 }
 
+void removeSlightlyLessTerribleFeatures(
+        std::vector<std::vector<std::vector<cv::Point2f>>> &keypoints,
+        std::vector<std::vector<std::vector<cv::Point2f>>> &keypoints_p,
+        std::vector<std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>> &kp_with_depth,
+        std::vector<std::vector<std::vector<int>>> &keypoint_ids,
+        std::vector<std::vector<cv::Mat>> &descriptors,
+        std::vector<std::vector<std::vector<int>>> &has_depth,
+        const int frame,
+        const std::vector<std::vector<std::pair<int, int>>> &good_matches) {
+    // remove features not matched in good_matches
+    for(int cam=0; cam<num_cams; cam++) {
+        // I'm not smart enough to figure how to delete things
+        // other than making a new vector, pointcloud, or mat
+        // and then copying everything over :(
+        // In Python I could have just written a = a[indices]
+        std::set<int> good_indices;
+        for(auto gm : good_matches[cam]) {
+            good_indices.insert(gm.first);
+        }
+        int m = good_indices.size(), n = keypoints[cam][frame].size();
+        std::cerr << "Good matches of " << cam << ": " << m << "/" << n << std::endl;
+        std::vector<cv::Point2f> tmp_keypoints(m);
+        std::vector<cv::Point2f> tmp_keypoints_p(m);
+        pcl::PointCloud<pcl::PointXYZ>::Ptr tmp_kp_with_depth(
+                new pcl::PointCloud<pcl::PointXYZ>);
+        std::vector<int> tmp_keypoint_ids(m);
+        cv::Mat tmp_descriptors(
+                m, descriptors[cam][frame].cols,
+                descriptors[cam][frame].type());
+        std::vector<int> tmp_has_depth(m);
+        int j = 0, jd = 0;
+        for(int i=0; i<n; i++) {
+            if(!good_indices.count(i)) continue;
+            tmp_keypoints[j] = keypoints[cam][frame][i];
+            tmp_keypoints_p[j] = keypoints_p[cam][frame][i];
+            tmp_keypoint_ids[j] = keypoint_ids[cam][frame][i];
+            descriptors[cam][frame].row(i).copyTo(tmp_descriptors.row(j));
+            int d = has_depth[cam][frame][i];
+            if(d != -1) {
+                tmp_kp_with_depth->push_back(kp_with_depth[cam][frame]->at(d));
+                tmp_has_depth[j] = jd++;
+            } else {
+                tmp_has_depth[j] = -1;
+            }
+            j++;
+        }
+        // these are all allocated on the stack or smart pointers
+        // so no memory leaks, hopefully
+        keypoints[cam][frame] = tmp_keypoints;
+        keypoints_p[cam][frame] = tmp_keypoints_p;
+        kp_with_depth[cam][frame] = tmp_kp_with_depth;
+        keypoint_ids[cam][frame] = tmp_keypoint_ids;
+        tmp_descriptors.copyTo(descriptors[cam][frame]);
+        has_depth[cam][frame] = tmp_has_depth;
+    }
+}
+
 void projectLidarToCamera(
         const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> &scans,
         std::vector<std::vector<cv::Point2f>> &projection,
@@ -509,8 +566,8 @@ void matchUsingId(
 
 void residualStats(
         ceres::Problem &problem,
-        std::vector<std::vector<std::pair<int, int>>> &good_matches,
-        std::vector<std::vector<ResidualType>> &residual_type
+        const std::vector<std::vector<std::pair<int, int>>> &good_matches,
+        const std::vector<std::vector<ResidualType>> &residual_type
         );
 
 Eigen::Matrix4d frameToFrame(
@@ -819,8 +876,8 @@ Eigen::Matrix4d frameToFrame(
 
 void residualStats(
         ceres::Problem &problem,
-        std::vector<std::vector<std::pair<int, int>>> &good_matches,
-        std::vector<std::vector<ResidualType>> &residual_type
+        const std::vector<std::vector<std::pair<int, int>>> &good_matches,
+        const std::vector<std::vector<ResidualType>> &residual_type
         ) {
     // compute some statistics about residuals
     double cost;
