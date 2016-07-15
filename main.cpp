@@ -103,10 +103,23 @@ int main(int argc, char** argv) {
     std::vector<cv::Mat> img_prevs(num_cams);
 
     // vector which maps from keypoint id to observed position
-    std::vector<std::vector<std::vector<cv::Point2f>>> keypoint_obs(num_cams);
+    // [keypoint_id][cam][frame] = observation
+    std::vector<std::vector<std::map<int, cv::Point2f>>> keypoint_obs2;
+    // [keypoint_id][cam][frame] = observation3
+    std::vector<std::vector<std::map<int, pcl::PointXYZ>>> keypoint_obs3;
+    // number of observations for each keypoint_id
+    std::vector<int> keypoint_obs_count;
+    // bool to check whether [keypoint_id][cam][frame] has been added
+    std::vector<std::vector<std::vector<bool>>> factor_added;
+
+    // list of poses used to triangulate features
+    std::vector<double[6]> poses_ceres(num_frames);
 
     // counters for keypoint id, one for each camera
     int id_counter = 0;
+    // histogram to keep track of how long keypoints last
+    // no keypoint can possibly be seen more than 1000 times;
+    std::vector<int> keypoint_obs_count_hist(1000, 0);
 
 #ifdef VISUALIZE
     char video[] = "video";
@@ -127,17 +140,32 @@ int main(int argc, char** argv) {
         for(int frame = 0; frame < num_frames; frame++) {
             isam::Pose3d_Node* initial_node = new isam::Pose3d_Node();
             cam_nodes[cam].push_back(initial_node);
-            slam.add_node(initial_node);
         }
+        slam.add_node(cam_nodes[cam][0]);
     }
     isam::Noise noiseless6 = isam::Information(1000. * isam::eye(6));
     isam::Noise noisy6 = isam::Information(1 * isam::eye(6));
     isam::Pose3d origin;
-    isam::Pose3d_Factor* prior = new isam::Pose3d_Factor(cam_nodes[0][0], origin, noiseless6);
+    isam::Pose3d_Factor* prior = new isam::Pose3d_Factor(
+            cam_nodes[0][0], origin, noiseless6);
     slam.add_factor(prior);
+    for(int cam = 1; cam<num_cams; cam++) {
+        isam::Pose3d_Pose3d_Factor* cam_factor = new isam::Pose3d_Pose3d_Factor(
+                cam_nodes[0][0],
+                cam_nodes[cam][0],
+                isam::Pose3d(cam_pose[cam].cast<double>()),
+                noiseless6
+                );
+        slam.add_factor(cam_factor);
+    }
 
     for(int frame = 0; frame < num_frames; frame++) {
         auto start = clock()/double(CLOCKS_PER_SEC);
+        if(frame > 0) {
+            for(int cam = 0; cam<num_cams; cam++) {
+                slam.add_node(cam_nodes[cam][frame]);
+            }
+        }
 
         ScanData *sd = lru.get(dataset, frame);
         const auto &scans = sd->scans;
@@ -355,8 +383,6 @@ int main(int argc, char** argv) {
                 << " " << has_depth[cam][frame][10]
                 << std::endl;
                 */
-            keypoint_obs.resize(id_counter);
-            // TODO: triangulate keypoint positions
 
             // iSAM time!
             isam::Pose3d_Pose3d_Factor* odom_factor = new isam::Pose3d_Pose3d_Factor(
@@ -366,20 +392,51 @@ int main(int argc, char** argv) {
                     noisy6
                     );
             slam.add_factor(odom_factor);
+            for(int cam = 1; cam<num_cams; cam++) {
+                isam::Pose3d_Pose3d_Factor* cam_factor = new isam::Pose3d_Pose3d_Factor(
+                        cam_nodes[0][frame],
+                        cam_nodes[cam][frame],
+                        isam::Pose3d(cam_pose[cam].cast<double>()),
+                        noiseless6
+                        );
+                slam.add_factor(cam_factor);
+            }
         }
-        for(int cam = 1; cam<num_cams; cam++) {
-            isam::Pose3d_Pose3d_Factor* cam_factor = new isam::Pose3d_Pose3d_Factor(
-                    cam_nodes[0][frame],
-                    cam_nodes[cam][frame],
-                    isam::Pose3d(cam_pose[cam].cast<double>()),
-                    noiseless6
-                    );
-        }
+
         while(point_nodes.size() <= id_counter) {
             isam::Point3d_Node* point_node = new isam::Point3d_Node();
             point_nodes.push_back(point_node);
             slam.add_node(point_node);
         }
+        keypoint_obs_count_hist[0] += id_counter+1 - keypoint_obs_count.size();
+        keypoint_obs_count.resize(id_counter+1, 0);
+        keypoint_obs2.resize(id_counter+1,
+                std::vector<std::map<int, cv::Point2f>>(num_cams));
+        keypoint_obs3.resize(id_counter+1,
+                std::vector<std::map<int, pcl::PointXYZ>>(num_cams));
+        for(int cam=0; cam<num_cams; cam++) {
+            for(int i=0; i<keypoints[cam][frame].size(); i++) {
+                int id = keypoint_ids[cam][frame][i];
+                keypoint_obs_count[id]++;
+                int koc = keypoint_obs_count[id];
+                keypoint_obs_count_hist[koc-1]--;
+                keypoint_obs_count_hist[koc]++;
+                if(has_depth[cam][frame][i] == -1) {
+                    keypoint_obs2[id][cam][frame] = keypoints[cam][frame][i];
+                } else {
+                    keypoint_obs3[id][cam][frame] = kp_with_depth[cam][frame]->at(
+                            has_depth[cam][frame][i]);
+                }
+            }
+        }
+        std::cerr << "Keypoint observation stats: ";
+        for(int i=0; i<10; i++) {
+            std::cerr << keypoint_obs_count_hist[i] << " ";
+        }
+        int zxcv = 0; for(auto h : keypoint_obs_count_hist) zxcv += h;
+        std::cerr << zxcv << std::endl;
+        std::cerr << "Features: " << id_counter+1 << std::endl;
+
         for(int cam=0; cam<num_cams; cam++) {
             for(int i=0; i<keypoints[cam][frame].size(); i++) {
                 if(has_depth[cam][frame][i] == -1) {
@@ -412,8 +469,8 @@ int main(int argc, char** argv) {
             }
         }
 
-        if(frame > 10 && frame % 5 == 0) {
-            std::cerr << "Bundle adjusting" << std::endl;
+        if(frame >= 10 && frame % 5 == 0) {
+            std::cerr << "Bundle adjusting post" << std::endl;
             isam::Properties prop = slam.properties();
             prop.max_iterations = 100;
             //prop.method = isam::DOG_LEG;

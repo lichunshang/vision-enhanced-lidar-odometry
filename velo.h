@@ -82,6 +82,7 @@ void trackFeatures(
                 points2[i].y >= img_height) {
             continue;
         }
+        /*
         int col = points2[i].x / min_distance,
             row = points2[i].y / min_distance;
         bool bad = false;
@@ -102,6 +103,7 @@ void trackFeatures(
         }
         if(bad) continue;
         occupied[col * row_cells + row].push_back(points2[i]);
+        */
         keypoints_p[cam2][frame2].push_back(points2[i]);
         keypoints[cam2][frame2].push_back(
                 pixel2canonical(points2[i], Kinv2)
