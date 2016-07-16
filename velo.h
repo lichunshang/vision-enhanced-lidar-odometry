@@ -378,9 +378,13 @@ std::vector<int> featureDepthAssociation(
         const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> &scans,
         const std::vector<std::vector<cv::Point2f>> &projection,
         const std::vector<cv::Point2f> &keypoints,
-        pcl::PointCloud<pcl::PointXYZ>::Ptr keypoints_with_depth
+        pcl::PointCloud<pcl::PointXYZ>::Ptr keypoints_with_depth,
+        std::vector<int> &has_depth
         ) {
-    std::vector<int> has_depth(keypoints.size(), -1);
+    has_depth.resize(keypoints.size());
+    for(int i=0; i<has_depth.size(); i++) {
+        has_depth[i] = -1;
+    }
     /*
     std::cerr << "Sizes: " <<  scans.size() << " "
         << projection.size() << " "
@@ -861,7 +865,7 @@ Eigen::Matrix4d frameToFrame(
             ceres::Solver::Summary summary;
             ceres::Solve(options, &problem, &summary);
             if(f2f_iterations - iter == 0) {
-                residualStats(problem, good_matches, residual_type);
+                //residualStats(problem, good_matches, residual_type);
             }
 #ifdef ENABLE_ICP
         }
