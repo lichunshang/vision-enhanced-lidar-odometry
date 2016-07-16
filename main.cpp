@@ -41,7 +41,7 @@
 #include <isam/slam_monocular.h>
 
 #define VISUALIZE
-//#define ENABLE_ICP
+#define ENABLE_ICP
 #define ENABLE_2D2D
 #define ENABLE_3D2D
 
@@ -110,8 +110,6 @@ int main(int argc, char** argv) {
     // number of observations for each keypoint_id
     std::vector<int> keypoint_obs_count;
 
-    // list of poses used to triangulate features
-    std::vector<double[6]> poses_ceres(num_frames);
 
     // counters for keypoint id, one for each camera
     int id_counter = 0;
@@ -119,6 +117,10 @@ int main(int argc, char** argv) {
     // no keypoint can possibly be seen more than 1000 times;
     std::vector<int> keypoint_obs_count_hist(1000, 0);
     std::vector<bool> keypoint_added;
+
+    std::vector<Eigen::Matrix4d,
+        Eigen::aligned_allocator<Eigen::Matrix4d>> dead_reckoning(num_frames);
+    dead_reckoning[0] = Eigen::Matrix4d::Identity();
 
 #ifdef VISUALIZE
     char video[] = "video";
@@ -162,7 +164,6 @@ int main(int argc, char** argv) {
     }
 
     for(int frame = 0; frame < num_frames; frame++) {
-        auto start = clock()/double(CLOCKS_PER_SEC);
         if(frame > 0) {
             for(int cam = 0; cam<num_cams; cam++) {
                 slam.add_node(cam_nodes[cam][frame]);
@@ -231,15 +232,19 @@ int main(int argc, char** argv) {
             Eigen::Matrix4d dT;
             if(dframe == 1) {
                 if(frame > 1) {
-                    Eigen::Matrix4d T1 = cam_nodes[0][frame-2]->value().wTo();
-                    Eigen::Matrix4d T2 = cam_nodes[0][frame-1]->value().wTo();
+                    //Eigen::Matrix4d T1 = cam_nodes[0][frame-2]->value().wTo();
+                    //Eigen::Matrix4d T2 = cam_nodes[0][frame-1]->value().wTo();
+                    auto T1 = dead_reckoning[frame-2];
+                    auto T2 = dead_reckoning[frame-1];
                     dT = T2 * T1.inverse();
                 } else {
                     dT = util::pose_mat2vec(transform);
                 }
             } else {
-                Eigen::Matrix4d T1 = cam_nodes[0][frame-dframe]->value().wTo();
-                Eigen::Matrix4d T2 = cam_nodes[0][frame]->value().wTo();
+                //Eigen::Matrix4d T1 = cam_nodes[0][frame-dframe]->value().wTo();
+                //Eigen::Matrix4d T2 = cam_nodes[0][frame]->value().wTo();
+                auto T1 = dead_reckoning[frame-dframe];
+                auto T2 = dead_reckoning[frame];
                 dT = T2 * T1.inverse();
             }
             util::pose_vec2mat(dT, transform);
@@ -256,6 +261,7 @@ int main(int argc, char** argv) {
             std::cerr << "Predicted: ";
             for(int i=0; i<6; i++) std::cerr << transform[i] << " ";
             std::cerr << std::endl;
+            auto start = clock() / double(CLOCKS_PER_SEC);
             Eigen::Matrix4d dpose = frameToFrame(
                     matches,
                     keypoints,
@@ -269,7 +275,11 @@ int main(int argc, char** argv) {
                     transform,
                     good_matches,
                     residual_type);
-            std::cerr << "Optimized: ";
+            auto end = clock() / double(CLOCKS_PER_SEC);
+            if(dframe == 1) {
+                dead_reckoning[frame] = dpose * dead_reckoning[frame-1];
+            }
+            std::cerr << "Optimized (t=" << end - start << "): ";
             for(int i=0; i<6; i++) std::cerr << transform[i] << " ";
             std::cerr << std::endl;
 
@@ -283,11 +293,11 @@ int main(int argc, char** argv) {
             agreement_t << agreement[3], agreement[4], agreement[5];
             Eigen::Matrix3d agreement_r;
             agreement_r << agreement[0], agreement[1], agreement[2];
-            if(agreement_t.norm() > agreement_t_thresh && dframe > 1) {
+            if(agreement_t.norm() > agreement_t_thresh * dframe && dframe > 1) {
                 std::cerr << "Poor t agreement" << std::endl;
                 break;
             }
-            if(agreement_r.norm() > agreement_r_thresh && dframe > 1) {
+            if(agreement_r.norm() > agreement_r_thresh * dframe && dframe > 1) {
                 std::cerr << "Poor r agreement" << std::endl;
                 break;
             }
@@ -397,7 +407,7 @@ int main(int argc, char** argv) {
                         );
                 slam.add_factor(cam_factor);
             }
-            slam.update();
+            //slam.batch_optimization();
         }
         sd = lru.get(dataset, frame);
         for(int cam = 0; cam<num_cams; cam++) {
@@ -555,8 +565,8 @@ int main(int argc, char** argv) {
             }
         }
         */
-        if(frame > 0) {
-            slam.update();
+        if(frame > 0 && frame % ba_every == 0) {
+            slam.batch_optimization();
 
             std::ofstream output;
             output.open(("results/" + std::string(argv[1]) + ".txt").c_str());
@@ -568,16 +578,6 @@ int main(int argc, char** argv) {
             output.close();
         }
         std::cerr << "Frame complete: " << frame << std::endl;
-        /*
-        if(frame >= 10 && frame % 5 == 0) {
-            std::cerr << "Bundle adjusting post" << std::endl;
-            isam::Properties prop = slam.properties();
-            prop.max_iterations = 100;
-            //prop.method = isam::DOG_LEG;
-            slam.set_properties(prop);
-            slam.batch_optimization();
-        }
-        */
     }
     return 0;
 }

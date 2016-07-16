@@ -7,9 +7,10 @@ const int num_cams = 2, // number of cameras we use
     corner_count = 3000, // number of features
     icp_skip = 100,
     f2f_iterations = 2,
-    icp_iterations = 4,
-    min_matches = 100, // minimum number of feature matches to proceed
-    detect_every = 1; // detect new features every this number of frames
+    icp_iterations = 3,
+    min_matches = 0, // minimum number of feature matches to proceed
+    detect_every = 1, // detect new features every this number of frames
+    ba_every = 10; // bundle adjust every this number of frames
 
 const double
     flow_outlier = 20000, // pixels^2, squared distance of optical flow
@@ -26,10 +27,10 @@ const double
     depth_assoc_thresh = 0.015, // canonical camera units
     z_weight = 0.6,
     outlier_reject = 10.0,
-    correspondence_thresh_icp = 1,
+    correspondence_thresh_icp = 0.5,
     icp_norm_condition = 1e-5,
-    agreement_t_thresh = 0.5, // meters
-    agreement_r_thresh = 0.1; // radians
+    agreement_t_thresh = 0.1, // meters
+    agreement_r_thresh = 0.05; // radians
 
 int img_width = 1226, // kitti data
     img_height = 370;

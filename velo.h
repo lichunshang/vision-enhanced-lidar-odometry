@@ -861,7 +861,7 @@ Eigen::Matrix4d frameToFrame(
             ceres::Solver::Options options;
             options.linear_solver_type = ceres::DENSE_SCHUR;
             options.minimizer_progress_to_stdout = false;
-            options.num_threads = 1;
+            options.num_threads = 8;
             ceres::Solver::Summary summary;
             ceres::Solve(options, &problem, &summary);
             if(f2f_iterations - iter == 0) {
