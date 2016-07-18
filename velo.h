@@ -588,7 +588,8 @@ Eigen::Matrix4d frameToFrame(
         const int frame2,
         double transform[6],
         std::vector<std::vector<std::pair<int, int>>> &good_matches,
-        std::vector<std::vector<ResidualType>> &residual_type
+        std::vector<std::vector<ResidualType>> &residual_type,
+        const bool enable_icp
         ) {
 
     for(int iter = 1; iter <= f2f_iterations; iter++) {
@@ -767,7 +768,7 @@ Eigen::Matrix4d frameToFrame(
                 icp_blocks.pop_back();
                 problem.RemoveResidualBlock(bid);
             }
-            for(int sm = 0; sm < scans_M.size(); sm++) {
+            for(int sm = 0; sm < scans_M.size() * enable_icp; sm++) {
                 for(int smi = 0; smi < scans_M[sm]->size(); smi+= icp_skip) {
                     pcl::PointXYZ pointM = scans_M[sm]->at(smi);
                     pcl::PointXYZ pointM_untransformed = pointM;
@@ -861,7 +862,7 @@ Eigen::Matrix4d frameToFrame(
             ceres::Solver::Options options;
             options.linear_solver_type = ceres::DENSE_SCHUR;
             options.minimizer_progress_to_stdout = false;
-            options.num_threads = 8;
+            //options.num_threads = 8;
             ceres::Solver::Summary summary;
             ceres::Solve(options, &problem, &summary);
             if(f2f_iterations - iter == 0) {

@@ -121,6 +121,11 @@ int main(int argc, char** argv) {
     std::vector<Eigen::Matrix4d,
         Eigen::aligned_allocator<Eigen::Matrix4d>> dead_reckoning(num_frames);
     dead_reckoning[0] = Eigen::Matrix4d::Identity();
+    std::vector<std::vector<int>> dframes(2);
+    dframes[0] = {1};
+    for(int k=ba_every*3; k<num_frames; k+= ba_every) {
+        dframes[1].push_back(k);
+    }
 
 #ifdef VISUALIZE
     char video[] = "video";
@@ -224,11 +229,11 @@ int main(int argc, char** argv) {
         }
         std::cerr << "Feature tracking done" << std::endl;
 
-        for(int dframe = 1; dframe <= 10; dframe++) {
+        for(int ba = 0; ba < 2; ba++) {
+        for(int dframe : dframes[ba]) {
             if(frame-dframe < 0) break;
             // matches are what's fed into frameToFrame,
             // good matches have outliers removed during optimization
-            // TODO: compute transform guess
             Eigen::Matrix4d dT;
             if(dframe == 1) {
                 if(frame > 1) {
@@ -248,16 +253,29 @@ int main(int argc, char** argv) {
                 dT = T2 * T1.inverse();
             }
             util::pose_vec2mat(dT, transform);
-            std::cerr << "Computing f2f pose: " << 
-                " " << frame-dframe << "-" << frame << std::endl;
             std::vector<std::vector<std::pair<int, int>>> matches(num_cams);
             std::vector<std::vector<std::pair<int, int>>> good_matches(num_cams);
             std::vector<std::vector<ResidualType>> residual_type(num_cams);
+
+            // if attempting loop closure,
+            // check if things are close by
+            if(ba == 1) {
+                Eigen::Vector3d le_dist; le_dist << transform[3], transform[4], transform[5];
+                if(le_dist.norm() > loop_close_thresh) {
+                    continue;
+                } else {
+                    std::cerr << "Loop closure plausible" << std::endl;
+                }
+            }
+            std::cerr << "Computing f2f pose: " << 
+                " " << frame-dframe << "-" << frame << std::endl;
             sd = lru.get(dataset, frame);
             ScanData *sd_prev = lru.get(dataset, frame - dframe);
             matchUsingId(keypoint_ids, frame, frame-dframe, matches);
             std::cerr << "Matches using id: " << matches[0].size() << std::endl;
             if(dframe > 1 && matches[0].size() < min_matches) break;
+            bool enable_icp = ba;
+            if(matches[0].size() < 100) enable_icp = true;
             std::cerr << "Predicted: ";
             for(int i=0; i<6; i++) std::cerr << transform[i] << " ";
             std::cerr << std::endl;
@@ -274,7 +292,8 @@ int main(int argc, char** argv) {
                     frame-dframe,
                     transform,
                     good_matches,
-                    residual_type);
+                    residual_type,
+                    enable_icp);
             auto end = clock() / double(CLOCKS_PER_SEC);
             if(dframe == 1) {
                 dead_reckoning[frame] = dpose * dead_reckoning[frame-1];
@@ -289,15 +308,17 @@ int main(int argc, char** argv) {
             std::cerr << "Agreement: ";
             for(int i=0; i<6; i++) std::cerr << agreement[i] << " ";
             std::cerr << std::endl;
-            Eigen::Matrix3d agreement_t;
+            Eigen::Vector3d agreement_t;
             agreement_t << agreement[3], agreement[4], agreement[5];
-            Eigen::Matrix3d agreement_r;
+            Eigen::Vector3d agreement_r;
             agreement_r << agreement[0], agreement[1], agreement[2];
-            if(agreement_t.norm() > agreement_t_thresh * dframe && dframe > 1) {
-                std::cerr << "Poor t agreement" << std::endl;
+            if(ba == 0 && agreement_t.norm() > agreement_t_thresh * dframe
+                    && dframe > 1) {
+                std::cerr << "Poor t agreement: " << agreement_t.norm()
+                    << " " << agreement_t_thresh * dframe << std::endl;
                 break;
             }
-            if(agreement_r.norm() > agreement_r_thresh * dframe && dframe > 1) {
+            if(agreement_r.norm() > agreement_r_thresh && dframe > 1) {
                 std::cerr << "Poor r agreement" << std::endl;
                 break;
             }
@@ -333,7 +354,7 @@ int main(int argc, char** argv) {
                         auto p1 = keypoints_p[cam][frame][m.first];
                         auto p2 = keypoints_p[cam][frame-dframe][m.second];
                         cv::arrowedLine(draw, p1, p2,
-                                cv::Scalar(0, 255, 255), 1, CV_AA);
+                                cv::Scalar(0, 0, 255), 1, CV_AA);
                     }
 
                     for(int i=0; i<good_matches[cam].size(); i++) {
@@ -347,7 +368,7 @@ int main(int argc, char** argv) {
                                 break;
                             case RESIDUAL_3D2D:
                             case RESIDUAL_2D3D:
-                                color = cv::Scalar(0, 250, 0);
+                                color = cv::Scalar(0, 250, 255);
                                 break;
                             case RESIDUAL_2D2D:
                                 color = cv::Scalar(255, 200, 0);
@@ -408,6 +429,7 @@ int main(int argc, char** argv) {
                 slam.add_factor(cam_factor);
             }
             //slam.batch_optimization();
+        }
         }
         sd = lru.get(dataset, frame);
         for(int cam = 0; cam<num_cams; cam++) {

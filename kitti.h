@@ -14,11 +14,11 @@ const int num_cams = 2, // number of cameras we use
 
 const double
     flow_outlier = 20000, // pixels^2, squared distance of optical flow
-    quality_level = 0.01, // good features to track quality
+    quality_level = 0.0001, // good features to track quality
     min_distance = 7, // pixel distance between nearest features
     weight_3D2D = 10,
     weight_2D2D = 500,
-    weight_3DPD = 0.5, // there are more of them
+    weight_3DPD = 1, // there are more of them
     loss_thresh_3D2D = 0.02, // reprojection error, canonical camera units
     loss_thresh_2D2D = 0.00004,
     loss_thresh_3DPD = 0.1, // physical distance, meters
@@ -26,11 +26,12 @@ const double
     match_thresh = 35, // bits, hamming distance for FREAK features
     depth_assoc_thresh = 0.015, // canonical camera units
     z_weight = 0.6,
-    outlier_reject = 10.0,
+    outlier_reject = 5.0,
     correspondence_thresh_icp = 0.5,
     icp_norm_condition = 1e-5,
     agreement_t_thresh = 0.1, // meters
-    agreement_r_thresh = 0.05; // radians
+    agreement_r_thresh = 0.05, // radians
+    loop_close_thresh = 8; // meters
 
 int img_width = 1226, // kitti data
     img_height = 370;
