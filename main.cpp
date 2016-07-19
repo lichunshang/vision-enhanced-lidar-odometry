@@ -44,6 +44,8 @@
 #define ENABLE_ICP
 #define ENABLE_2D2D
 #define ENABLE_3D2D
+#define ENABLE_ISAM
+//#define LOOP_CLOSURE
 
 #include "utility.h"
 #include "kitti.h"
@@ -118,14 +120,24 @@ int main(int argc, char** argv) {
     std::vector<int> keypoint_obs_count_hist(1000, 0);
     std::vector<bool> keypoint_added;
 
+    // camera_poses in matrix4d
     std::vector<Eigen::Matrix4d,
-        Eigen::aligned_allocator<Eigen::Matrix4d>> dead_reckoning(num_frames);
-    dead_reckoning[0] = Eigen::Matrix4d::Identity();
+        Eigen::aligned_allocator<Eigen::Matrix4d>> ceres_poses_mat(num_frames);
+    ceres_poses_mat[0] = Eigen::Matrix4d::Identity();
+    // camera poses in axis angle rotation, translation
+    std::vector<double[6]> ceres_poses_vec(num_frames);
+    // set of world frame position of keypoints
+    pcl::PointCloud<pcl::PointXYZ>::Ptr landmarks(
+            new pcl::PointCloud<pcl::PointXYZ>);
+
+    // attempt matching frames between dframes
     std::vector<std::vector<int>> dframes(2);
-    dframes[0] = {1};
+    dframes[0].push_back(1);
+    /*
     for(int k=ba_every*3; k<num_frames; k+= ba_every) {
         dframes[1].push_back(k);
     }
+    */
 
 #ifdef VISUALIZE
     char video[] = "video";
@@ -137,6 +149,7 @@ int main(int argc, char** argv) {
     ScansLRU lru;
 
     // preliminaries for bundle adjustment
+#ifdef ENABLE_ISAM
     isam::Slam slam;
     isam::Properties prop = slam.properties();
     prop.max_iterations = 50;
@@ -167,13 +180,16 @@ int main(int argc, char** argv) {
                 );
         slam.add_factor(cam_factor);
     }
+#endif
 
     for(int frame = 0; frame < num_frames; frame++) {
+#ifdef ENABLE_ISAM
         if(frame > 0) {
             for(int cam = 0; cam<num_cams; cam++) {
                 slam.add_node(cam_nodes[cam][frame]);
             }
         }
+#endif
 
         ScanData *sd = lru.get(dataset, frame);
         const auto &scans = sd->scans;
@@ -239,8 +255,8 @@ int main(int argc, char** argv) {
                 if(frame > 1) {
                     //Eigen::Matrix4d T1 = cam_nodes[0][frame-2]->value().wTo();
                     //Eigen::Matrix4d T2 = cam_nodes[0][frame-1]->value().wTo();
-                    auto T1 = dead_reckoning[frame-2];
-                    auto T2 = dead_reckoning[frame-1];
+                    auto T1 = ceres_poses_mat[frame-2];
+                    auto T2 = ceres_poses_mat[frame-1];
                     dT = T2 * T1.inverse();
                 } else {
                     dT = util::pose_mat2vec(transform);
@@ -248,8 +264,8 @@ int main(int argc, char** argv) {
             } else {
                 //Eigen::Matrix4d T1 = cam_nodes[0][frame-dframe]->value().wTo();
                 //Eigen::Matrix4d T2 = cam_nodes[0][frame]->value().wTo();
-                auto T1 = dead_reckoning[frame-dframe];
-                auto T2 = dead_reckoning[frame];
+                auto T1 = ceres_poses_mat[frame-dframe];
+                auto T2 = ceres_poses_mat[frame];
                 dT = T2 * T1.inverse();
             }
             util::pose_vec2mat(dT, transform);
@@ -279,10 +295,22 @@ int main(int argc, char** argv) {
             std::cerr << "Predicted: ";
             for(int i=0; i<6; i++) std::cerr << transform[i] << " ";
             std::cerr << std::endl;
+
+            std::map<int, pcl::PointXYZ> landmarks_at_frame;
+            // get triangulated landmarks
+            getLandmarksAtFrame(
+                    ceres_poses_mat[frame-dframe],
+                    landmarks,
+                    keypoint_added,
+                    keypoint_ids,
+                    frame-dframe,
+                    landmarks_at_frame);
             auto start = clock() / double(CLOCKS_PER_SEC);
             Eigen::Matrix4d dpose = frameToFrame(
                     matches,
                     keypoints,
+                    keypoint_ids,
+                    landmarks_at_frame,
                     kp_with_depth,
                     has_depth,
                     sd->scans,
@@ -296,15 +324,16 @@ int main(int argc, char** argv) {
                     enable_icp);
             auto end = clock() / double(CLOCKS_PER_SEC);
             if(dframe == 1) {
-                dead_reckoning[frame] = dpose * dead_reckoning[frame-1];
+                ceres_poses_mat[frame] = dpose * ceres_poses_mat[frame-1];
+                util::pose_vec2mat(ceres_poses_mat[frame], ceres_poses_vec[frame]);
             }
             std::cerr << "Optimized (t=" << end - start << "): ";
             for(int i=0; i<6; i++) std::cerr << transform[i] << " ";
             std::cerr << std::endl;
 
-            Eigen::Matrix4d dT2 = util::pose_mat2vec(transform);
+            // check agreement
             double agreement[6];
-            util::pose_vec2mat(dT2 * dT.inverse(), agreement);
+            util::pose_vec2mat(dpose * dT.inverse(), agreement);
             std::cerr << "Agreement: ";
             for(int i=0; i<6; i++) std::cerr << agreement[i] << " ";
             std::cerr << std::endl;
@@ -312,6 +341,7 @@ int main(int argc, char** argv) {
             agreement_t << agreement[3], agreement[4], agreement[5];
             Eigen::Vector3d agreement_r;
             agreement_r << agreement[0], agreement[1], agreement[2];
+
             if(ba == 0 && agreement_t.norm() > agreement_t_thresh * dframe
                     && dframe > 1) {
                 std::cerr << "Poor t agreement: " << agreement_t.norm()
@@ -396,7 +426,6 @@ int main(int argc, char** argv) {
             }
 #endif
             if(dframe == 1) {
-                /*
                 removeSlightlyLessTerribleFeatures(
                         keypoints,
                         keypoints_p,
@@ -406,9 +435,9 @@ int main(int argc, char** argv) {
                         has_depth,
                         frame,
                         good_matches);
-                        */
             }
 
+#ifdef ENABLE_ISAM
             // iSAM time!
             isam::Pose3d_Pose3d_Factor* odom_factor =
                 new isam::Pose3d_Pose3d_Factor(
@@ -429,8 +458,11 @@ int main(int argc, char** argv) {
                 slam.add_factor(cam_factor);
             }
             //slam.batch_optimization();
+#endif
         }
         }
+
+        // Detect new features
         sd = lru.get(dataset, frame);
         for(int cam = 0; cam<num_cams; cam++) {
             if(frame % detect_every == 0) {
@@ -495,11 +527,14 @@ int main(int argc, char** argv) {
             img_prevs[cam] = imgs[cam];
         }
 
+#ifdef ENABLE_ISAM
         while(point_nodes.size() <= id_counter) {
             isam::Point3d_Node* point_node = new isam::Point3d_Node();
             point_nodes.push_back(point_node);
         }
+#endif
         keypoint_added.resize(id_counter+1, false);
+        landmarks->resize(id_counter+1);
         keypoint_obs_count_hist[0] += id_counter+1 - keypoint_obs_count.size();
         keypoint_obs_count.resize(id_counter+1, 0);
         keypoint_obs2.resize(id_counter+1,
@@ -542,26 +577,37 @@ int main(int argc, char** argv) {
                 ids_seen.insert(id);
             }
         }
-        /*
         for(auto id : ids_seen) {
-            if(keypoint_obs_count[id] <= 3) {
+            if(keypoint_obs_count[id] <= 5) {
                 continue;
             }
+            triangulatePoint(
+                    keypoint_obs2[id],
+                    keypoint_obs3[id],
+                    ceres_poses_vec,
+                    landmarks->at(id),
+                    keypoint_added[id]);
+            //std::cerr << "Triangulating " << id << ": " << landmarks->at(id) << std::endl;
             if(!keypoint_added[id]) {
+#ifdef ENABLE_ISAM
                 slam.add_node(point_nodes[id]);
+#endif
                 keypoint_added[id] = true;
             }
+#ifdef ENABLE_ISAM
             for(int cam=0; cam<num_cams; cam++) {
                 for(auto obs3 : keypoint_obs3[id][cam]) {
                     isam::Noise noise3 = isam::Information(1 * isam::eye(3));
                     auto p3 = obs3.second;
                     Eigen::Vector3d point3d = p3.getVector3fMap().cast<double>();
-                    isam::Pose3d_Point3d_Factor* factor = new isam::Pose3d_Point3d_Factor(
-                            cam_nodes[cam][obs3.first],
-                            point_nodes[id],
-                            isam::Point3d(point3d),
-                            noise3
-                            );
+                    isam::Pose3d_Point3d_Factor* factor =
+                        new isam::Pose3d_Point3d_Factor(
+                                // 3D points always in cam 0 frame
+                                cam_nodes[0][obs3.first], 
+                                point_nodes[id],
+                                isam::Point3d(point3d),
+                                noise3
+                                );
                     slam.add_factor(factor);
                 }
                 keypoint_obs3[id][cam].clear();
@@ -573,21 +619,22 @@ int main(int argc, char** argv) {
                             obs2.second.y
                             );
                     isam::Noise noise2 = isam::Information(1 * isam::eye(2));
-                    isam::Monocular_Factor* factor;
-                    factor = new isam::Monocular_Factor(
-                            cam_nodes[cam][obs2.first],
-                            point_nodes[id],
-                            &(monoculars[cam]),
-                            measurement,
-                            noise2
-                            );
+                    isam::Monocular_Factor* factor =
+                        new isam::Monocular_Factor(
+                                cam_nodes[cam][obs2.first],
+                                point_nodes[id],
+                                &(monoculars[cam]),
+                                measurement,
+                                noise2
+                                );
                     slam.add_factor(factor);
                 }
                 keypoint_obs2[id][cam].clear();
             }
+#endif
         }
-        */
-        if(frame > 0 && frame % ba_every == 0) {
+#ifdef ENABLE_ISAM
+        if(/*frame > 0 && frame % ba_every == 0 ||*/ frame == num_frames-1) {
             slam.batch_optimization();
 
             std::ofstream output;
@@ -599,6 +646,14 @@ int main(int argc, char** argv) {
             }
             output.close();
         }
+#else
+        std::ofstream output;
+        output.open(("results/" + std::string(argv[1]) + ".txt").c_str());
+        for(int i=0; i<=frame; i++) {
+            output_line(ceres_poses_mat[i], output);
+        }
+        output.close();
+#endif
         std::cerr << "Frame complete: " << frame << std::endl;
     }
     return 0;

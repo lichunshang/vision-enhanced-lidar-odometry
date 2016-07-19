@@ -14,7 +14,7 @@ const int num_cams = 2, // number of cameras we use
 
 const double
     flow_outlier = 20000, // pixels^2, squared distance of optical flow
-    quality_level = 0.0001, // good features to track quality
+    quality_level = 0.001, // good features to track quality
     min_distance = 7, // pixel distance between nearest features
     weight_3D2D = 10,
     weight_2D2D = 500,
@@ -23,7 +23,7 @@ const double
     loss_thresh_2D2D = 0.00004,
     loss_thresh_3DPD = 0.1, // physical distance, meters
     loss_thresh_3D3D = 0.05, // physical distance, meters
-    match_thresh = 35, // bits, hamming distance for FREAK features
+    match_thresh = 29, // bits, hamming distance for FREAK features
     depth_assoc_thresh = 0.015, // canonical camera units
     z_weight = 0.6,
     outlier_reject = 5.0,

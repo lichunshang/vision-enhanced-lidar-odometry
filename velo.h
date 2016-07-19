@@ -392,6 +392,7 @@ std::vector<int> featureDepthAssociation(
         */
     int has_depth_n = 0;
     for(int k=0; k<keypoints.size(); k++) {
+        has_depth[k] = -1;
         cv::Point2f kp = keypoints[k];
         int last_interp = -1;
         for(int s=0, _s = scans.size(); s<_s; s++) {
@@ -579,6 +580,8 @@ void residualStats(
 Eigen::Matrix4d frameToFrame(
         const std::vector<std::vector<std::pair<int, int>>> &matches,
         const std::vector<std::vector<std::vector<cv::Point2f>>> &keypoints,
+        const std::vector<std::vector<std::vector<int>>> &keypoint_ids,
+        const std::map<int, pcl::PointXYZ> &landmarks_at_frame,
         const std::vector<std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>> &keypoints_with_depth,
         const std::vector<std::vector<std::vector<int>>> &has_depth,
         const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> &scans_M,
@@ -599,31 +602,47 @@ Eigen::Matrix4d frameToFrame(
 
         // Visual odometry
         for(int cam = 0; cam<num_cams; cam++) {
+            std::cerr << "Matches: " << matches[cam].size() << std::endl;
             good_matches[cam].clear();
             residual_type[cam].clear();
             const std::vector<std::pair<int, int>> &mc = matches[cam];
             for(int i=0; i<mc.size(); i++) {
                 int point1 = mc[i].first,
                     point2 = mc[i].second;
-                if(has_depth[cam][frame1][point1] != -1
-                        && has_depth[cam][frame2][point2] != -1) {
-                    // 3D 3D
-                    const pcl::PointXYZ pointM =
-                        keypoints_with_depth[cam][frame1]
-                        ->at(has_depth[cam][frame1][point1]);
-                    const pcl::PointXYZ pointS =
-                        keypoints_with_depth[cam][frame2]
+                int id = keypoint_ids[cam][frame2][point2];
+                bool d1 = has_depth[cam][frame1][point1] != -1,
+                     d2 = has_depth[cam][frame2][point2] != -1;
+                pcl::PointXYZ point3_2, point3_1;
+                if(landmarks_at_frame.count(id)) {
+                    d2 = true;
+                    point3_2 = landmarks_at_frame.at(id);
+                    //std::cerr << "Using landmark: " << point3_2 << std::endl;
+                } else if(d2) {
+                    point3_2 = keypoints_with_depth[cam][frame2]
                         ->at(has_depth[cam][frame2][point2]);
-                    auto pointMS = pointM;
-                    util::subtract_assign(pointMS, pointS);
-                    //std::cerr << "  3D 3D " << cam << ": " << pointM<< ", " << pointS << std::endl;
+                }
+                if(d1) {
+                    point3_1 = keypoints_with_depth[cam][frame1]
+                        ->at(has_depth[cam][frame1][point1]);
+                }
+                cv::Point2f point2_1 = keypoints[cam][frame1][point1];
+                cv::Point2f point2_2 = keypoints[cam][frame2][point2];
+                //std::cerr << "has depth: " << has_depth[cam][frame1].size();
+
+                //std::cerr << " " << has_depth[cam][frame1][point1]
+                //    << " " << keypoints_with_depth[cam][frame1]->size();
+                //std::cerr << " " << has_depth[cam][frame2][point2]
+                //    << " " << keypoints_with_depth[cam][frame2]->size();
+                //std::cerr << std::endl;
+                if(d1 && d2) {
+                    // 3D 3D
                     cost3D3D *cost = new cost3D3D(
-                            pointM.x,
-                            pointM.y,
-                            pointM.z,
-                            pointS.x,
-                            pointS.y,
-                            pointS.z
+                            point3_1.x,
+                            point3_1.y,
+                            point3_1.z,
+                            point3_2.x,
+                            point3_2.y,
+                            point3_2.z
                             );
                     double residual_test[3];
                     (*cost)(transform, residual_test);
@@ -646,18 +665,16 @@ Eigen::Matrix4d frameToFrame(
 
                     residual_type[cam].push_back(RESIDUAL_3D3D);
                     good_matches[cam].push_back(std::make_pair(point1, point2));
-                } else if(has_depth[cam][frame1][point1] == -1
-                        && has_depth[cam][frame2][point2] == -1) {
+                }
+                if(!d1 && !d2) {
                     // 2D 2D
 #ifdef ENABLE_2D2D
-                    const auto pointM = keypoints[cam][frame1][point1];
-                    const auto pointS = keypoints[cam][frame2][point2];
                     cost2D2D *cost =
                         new cost2D2D(
-                                pointM.x,
-                                pointM.y,
-                                pointS.x,
-                                pointS.y,
+                                point2_1.x,
+                                point2_1.y,
+                                point2_2.x,
+                                point2_2.y,
                                 cam_trans[cam](0),
                                 cam_trans[cam](1),
                                 cam_trans[cam](2)
@@ -679,20 +696,15 @@ Eigen::Matrix4d frameToFrame(
 #endif
                 }
 #ifdef ENABLE_3D2D
-                if(has_depth[cam][frame1][point1] != -1
-                        /*&& has_depth[cam][frame2][point2] == -1*/) {
+                if(d1) {
                     // 3D 2D
-                    const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame1]
-                        ->at(has_depth[cam][frame1][point1]);
-                    const auto point2D = keypoints[cam][frame2][point2];
-
                     cost3D2D *cost =
                         new cost3D2D(
-                                point3D.x,
-                                point3D.y,
-                                point3D.z,
-                                point2D.x,
-                                point2D.y,
+                                point3_1.x,
+                                point3_1.y,
+                                point3_1.z,
+                                point2_2.x,
+                                point2_2.y,
                                 cam_trans[cam](0),
                                 cam_trans[cam](1),
                                 cam_trans[cam](2)
@@ -717,19 +729,15 @@ Eigen::Matrix4d frameToFrame(
                     residual_type[cam].push_back(RESIDUAL_3D2D);
                     good_matches[cam].push_back(std::make_pair(point1, point2));
                 }
-                if(/*has_depth[cam][frame1][point1] == -1
-                     &&*/ has_depth[cam][frame2][point2] != -1) {
+                if(d2) {
                     // 2D 3D
-                    const pcl::PointXYZ point3D = keypoints_with_depth[cam][frame2]
-                        ->at(has_depth[cam][frame2][point2]);
-                    const auto point2D = keypoints[cam][frame1][point1];
                     cost2D3D *cost =
                         new cost2D3D(
-                                point3D.x,
-                                point3D.y,
-                                point3D.z,
-                                point2D.x,
-                                point2D.y,
+                                point3_2.x,
+                                point3_2.y,
+                                point3_2.z,
+                                point2_1.x,
+                                point2_1.y,
                                 cam_trans[cam](0),
                                 cam_trans[cam](1),
                                 cam_trans[cam](2)
@@ -761,6 +769,8 @@ Eigen::Matrix4d frameToFrame(
         // Point set registration
 #ifdef ENABLE_ICP
         std::vector<ceres::ResidualBlockId> icp_blocks;
+
+        std::cerr << "M: " << scans_M.size() << " S: " << scans_S.size() << kd_trees.size() << std::endl;
 
         for(int icp_iter = 0; icp_iter < icp_iterations; icp_iter++) {
             while(icp_blocks.size() > 0) {
@@ -986,4 +996,128 @@ void residualStats(
             << " median " << std::fixed << std::setprecision(10) << residuals_3DPD[residuals_3DPD.size()/2]
             << " mean " << std::fixed << std::setprecision(10) << sum_3DPD/residuals_3DPD.size()
             << " count " << residuals_3DPD.size() << std::endl;
+}
+
+void triangulatePoint(
+        const std::vector<std::map<int, cv::Point2f>> &keypoint_obs2,
+        const std::vector<std::map<int, pcl::PointXYZ>> &keypoint_obs3,
+        const std::vector<double[6]> &camera_poses,
+        pcl::PointXYZ &point,
+        bool initial_guess
+        ) {
+    // given the 2D and 3D observations, the goal is to obtain
+    // the 3D position of the point
+    int initialized = 0;
+    // 0: uninitialized
+    // 1: one 2d measurement
+    // 2: two 2d measurements
+    // 3: initialized
+    double transform[3] = {0, 0, 10};
+    if(initial_guess) {
+        transform[0] = point.x;
+        transform[1] = point.y;
+        transform[2] = point.z;
+        initialized = 3;
+    }
+
+    ceres::Problem problem;
+    ceres::Solver::Options options;
+    options.linear_solver_type = ceres::DENSE_SCHUR;
+    options.minimizer_progress_to_stdout = false;
+    ceres::Solver::Summary summary;
+    for(int cam=0; cam<num_cams; cam++) {
+        for(auto obs3 : keypoint_obs3[cam]) {
+            /*
+            std::cerr << "3D observation " <<  obs3.second << ": ";
+            for(int i=0; i<6; i++) {
+                std::cerr << camera_poses[obs3.first][i] << " ";
+            }
+            std::cerr << std::endl;
+            */
+            ceres::CostFunction* cost_function =
+                new ceres::AutoDiffCostFunction<triangulation3D, 3, 6>(
+                        new triangulation3D(
+                            obs3.second.x,
+                            obs3.second.y,
+                            obs3.second.z,
+                            camera_poses[obs3.first][0],
+                            camera_poses[obs3.first][1],
+                            camera_poses[obs3.first][2],
+                            camera_poses[obs3.first][3],
+                            camera_poses[obs3.first][4],
+                            camera_poses[obs3.first][5]
+                            )
+                        );
+            problem.AddResidualBlock(
+                    cost_function,
+                    new ceres::CauchyLoss(loss_thresh_3D3D),
+                    transform);
+            if(!initialized) {
+                initialized = 3;
+                ceres::Solve(options, &problem, &summary);
+            }
+        }
+    }
+    for(int cam=0; cam<num_cams; cam++) {
+        for(auto obs2 : keypoint_obs2[cam]) {
+            /*
+            std::cerr << "2D observation " <<  obs2.second << ": ";
+            for(int i=0; i<6; i++) {
+                std::cerr << camera_poses[obs2.first][i] << " ";
+            }
+            std::cerr << ", " << cam_trans[cam].transpose();
+            std::cerr << std::endl;
+            */
+            ceres::CostFunction* cost_function =
+                new ceres::AutoDiffCostFunction<triangulation2D, 2, 6>(
+                        new triangulation2D(
+                            obs2.second.x,
+                            obs2.second.y,
+                            camera_poses[obs2.first][0],
+                            camera_poses[obs2.first][1],
+                            camera_poses[obs2.first][2],
+                            camera_poses[obs2.first][3],
+                            camera_poses[obs2.first][4],
+                            camera_poses[obs2.first][5],
+                            cam_trans[cam](0),
+                            cam_trans[cam](1),
+                            cam_trans[cam](2)
+                            )
+                        );
+            problem.AddResidualBlock(
+                    cost_function,
+                    new ceres::ScaledLoss(
+                        new ceres::CauchyLoss(loss_thresh_3D2D),
+                        weight_3D2D,
+                        ceres::TAKE_OWNERSHIP),
+                    transform);
+        }
+    }
+    ceres::Solve(options, &problem, &summary);
+    point.x = transform[0];
+    point.y = transform[1];
+    point.z = transform[2];
+}
+
+void getLandmarksAtFrame(
+        const Eigen::Matrix4d &pose,
+        const pcl::PointCloud<pcl::PointXYZ>::Ptr landmarks,
+        const std::vector<bool> &keypoint_added,
+        const std::vector<std::vector<std::vector<int>>> &keypoint_ids,
+        const int frame,
+        std::map<int, pcl::PointXYZ> &landmarks_at_frame) {
+    Eigen::Matrix4d poseinv = pose.inverse();
+    for(int cam = 0; cam < num_cams; cam++) {
+        for(int id : keypoint_ids[cam][frame]) {
+            if(landmarks_at_frame.count(id)) continue;
+            if(!keypoint_added[id]) continue;
+            Eigen::Vector4d p = poseinv 
+                * landmarks->at(id).getVector4fMap().cast<double>();
+            pcl::PointXYZ pp;
+            pp.x = p(0)/p(3);
+            pp.y = p(1)/p(3);
+            pp.z = p(2)/p(3);
+            landmarks_at_frame[id] = pp;
+        }
+    }
 }

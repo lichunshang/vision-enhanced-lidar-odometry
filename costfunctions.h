@@ -254,9 +254,8 @@ struct bundle2D {
            t_x, t_y, t_z;
 };
 
-struct bundle3D3D {
-    // 3D point to 3D point distance
-    bundle3D3D(
+struct bundle3D {
+    bundle3D(
             double s_x,
             double s_y,
             double s_z,
@@ -284,4 +283,93 @@ struct bundle3D3D {
     }
     double s_x, s_y, s_z,
            weight;
+};
+
+struct triangulation2D {
+    triangulation2D(
+            double s_x,
+            double s_y,
+            double cam_0,
+            double cam_1,
+            double cam_2,
+            double cam_3,
+            double cam_4,
+            double cam_5,
+            double t_x,
+            double t_y,
+            double t_z) :
+        s_x(s_x),
+        s_y(s_y),
+        cam_0(cam_0),
+        cam_1(cam_1),
+        cam_2(cam_2),
+        cam_3(cam_3),
+        cam_4(cam_4),
+        cam_5(cam_5),
+        t_x(t_x),
+        t_y(t_y),
+        t_z(t_z) {}
+
+    template <typename T>
+    bool operator()(const T* point, T* residual) const {
+        T M[3], M_original[3], rot[3];
+        rot[0] = -T(cam_0);
+        rot[1] = -T(cam_1);
+        rot[2] = -T(cam_2);
+        M_original[0] = T(point[0]) - T(cam_3);
+        M_original[1] = T(point[1]) - T(cam_4);
+        M_original[2] = T(point[2]) - T(cam_5);
+        ceres::AngleAxisRotatePoint(rot, M_original, M);
+
+        M[0] += T(t_x);
+        M[1] += T(t_y);
+        M[2] += T(t_z);
+        residual[0] = M[0] - T(s_x) * M[2];
+        residual[1] = M[1] - T(s_y) * M[2];
+        return true;
+    }
+    double s_x, s_y,
+           cam_0, cam_1, cam_2, cam_3, cam_4, cam_5,
+           t_x, t_y, t_z;
+};
+
+struct triangulation3D {
+    triangulation3D(
+            double s_x,
+            double s_y,
+            double s_z,
+            double cam_0,
+            double cam_1,
+            double cam_2,
+            double cam_3,
+            double cam_4,
+            double cam_5) :
+        s_x(s_x),
+        s_y(s_y),
+        s_z(s_z),
+        cam_0(cam_0),
+        cam_1(cam_1),
+        cam_2(cam_2),
+        cam_3(cam_3),
+        cam_4(cam_4),
+        cam_5(cam_5) {}
+
+    template <typename T>
+    bool operator()(const T* point, T* residual) const {
+        T M[3], M_original[3], rot[3];
+        rot[0] = -T(cam_0);
+        rot[1] = -T(cam_1);
+        rot[2] = -T(cam_2);
+        M_original[0] = T(point[0]) - T(cam_3);
+        M_original[1] = T(point[1]) - T(cam_4);
+        M_original[2] = T(point[2]) - T(cam_5);
+        ceres::AngleAxisRotatePoint(rot, M_original, M);
+
+        residual[0] = M[0] - T(s_x);
+        residual[1] = M[1] - T(s_y);
+        residual[2] = M[2] - T(s_z);
+        return true;
+    }
+    double s_x, s_y, s_z,
+           cam_0, cam_1, cam_2, cam_3, cam_4, cam_5;
 };
