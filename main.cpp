@@ -146,9 +146,13 @@ int main(int argc, char** argv) {
 
     // attempt matching frames between dframes
     std::vector<std::vector<int>> dframes(2);
+#ifdef ENABLE_ISAM
     for(int k=1; k<=ndiagonal; k++) {
         dframes[0].push_back(k);
     }
+#else
+    dframes[0].push_back(1);
+#endif
 #ifdef LOOP_CLOSURE
     for(int k=ba_every*10; k<num_frames; k+= ba_every) {
        dframes[1].push_back(k);
@@ -310,7 +314,7 @@ int main(int argc, char** argv) {
                         //Eigen::Matrix4d T2 = cam_nodes[0][frame-1]->value().wTo();
                         auto T1 = ceres_poses_mat[frame-2];
                         auto T2 = ceres_poses_mat[frame-1];
-                        dT = T2 * T1.inverse();
+                        dT = T1.inverse() * T2;
                     } else {
                         dT = util::pose_mat2vec(transform);
                     }
@@ -319,7 +323,7 @@ int main(int argc, char** argv) {
                     //Eigen::Matrix4d T2 = cam_nodes[0][frame]->value().wTo();
                     auto T1 = ceres_poses_mat[frame-dframe];
                     auto T2 = ceres_poses_mat[frame];
-                    dT = T2 * T1.inverse();
+                    dT = T1.inverse() * T2;
                 }
                 if(ba == 1) {
                     dT(1,3) /= 20;
@@ -396,7 +400,8 @@ int main(int argc, char** argv) {
                         transform,
                         good_matches,
                         residual_type,
-                        ba);
+                        //ba);
+                        true);
                         //enable_icp);
                 auto end = clock() / double(CLOCKS_PER_SEC);
                 if(dframe == 1) {
