@@ -38,14 +38,17 @@
 
 #include <isam/isam.h>
 #include <isam/robust.h>
-#include <isam/slam_monocular.h>
 
 #define VISUALIZE
-#define ENABLE_ICP
+//#define ENABLE_ICP
 #define ENABLE_2D2D
 #define ENABLE_3D2D
-#define ENABLE_ISAM
+//#define ENABLE_ISAM
 //#define LOOP_CLOSURE
+#define USE_CUDA
+//#define BUNDLE_ADJUST
+
+#include "my_slam_monocular.h"
 
 #include "utility.h"
 #include "kitti.h"
@@ -57,7 +60,9 @@
 int main(int argc, char** argv) {
     cv::setUseOptimized(true);
 
+#ifdef USE_CUDA
     cv::cuda::setDevice(1);
+#endif
     //cv::cuda::printCudaDeviceInfo(cv::cuda::getDevice());
     if(argc < 2) {
         std::cout << "Usage: velo kittidatasetnumber. e.g. velo 00" << std::endl;
@@ -112,6 +117,15 @@ int main(int argc, char** argv) {
     // number of observations for each keypoint_id
     std::vector<int> keypoint_obs_count;
 
+    // whether observation has been added to iSAM
+    // [cam][frame] => keypoint_id
+    std::vector<std::vector<
+        std::map<int, isam::Pose3d_Point3d_Factor*>>> added_to_isam_3d(num_cams,
+            std::vector<std::map<int, isam::Pose3d_Point3d_Factor*>>(num_frames));
+    std::vector<std::vector<
+        std::map<int, isam::Monocular_Factor*>>> added_to_isam_2d(num_cams,
+            std::vector<std::map<int, isam::Monocular_Factor*>>(num_frames));
+
 
     // counters for keypoint id, one for each camera
     int id_counter = 0;
@@ -132,16 +146,20 @@ int main(int argc, char** argv) {
 
     // attempt matching frames between dframes
     std::vector<std::vector<int>> dframes(2);
-    dframes[0].push_back(1);
-    /*
-    for(int k=ba_every*3; k<num_frames; k+= ba_every) {
-        dframes[1].push_back(k);
+    for(int k=1; k<=ndiagonal; k++) {
+        dframes[0].push_back(k);
     }
-    */
+#ifdef LOOP_CLOSURE
+    for(int k=ba_every*10; k<num_frames; k+= ba_every) {
+       dframes[1].push_back(k);
+    }
+#endif
 
 #ifdef VISUALIZE
-    char video[] = "video";
-    cvNamedWindow(video);
+    char features[] = "features";
+    cvNamedWindow(features);
+    char depthassoc[] = "depthassoc";
+    cvNamedWindow(depthassoc);
 #endif
 
     Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
@@ -237,229 +255,284 @@ int main(int argc, char** argv) {
                     pcl::PointCloud<pcl::PointXYZ>::Ptr(
                             new pcl::PointCloud<pcl::PointXYZ>);
                 featureDepthAssociation(scans_valid,
-                    projection,
-                    keypoints[cam][frame],
-                    kp_with_depth[cam][frame],
-                    has_depth[cam][frame]);
+                        projection,
+                        keypoints[cam][frame],
+                        kp_with_depth[cam][frame],
+                        has_depth[cam][frame]);
+#ifdef VISUALIZE
+                if(cam == 0) {
+                    cv::Mat draw;
+                    cvtColor(imgs[cam], draw, cv::COLOR_GRAY2BGR);
+                    auto &K = cam_intrinsic[cam];
+                    for(int s=0, _s = projection.size(); s<_s; s++) {
+                        auto P = projection[s];
+                        for(int ss=0; ss<projection[s].size(); ss++) {
+                            auto pp = canonical2pixel(projection[s][ss], K);
+                            auto PP = scans_valid[s]->at(ss);
+                            int D = 200;
+                            double d = sqrt(PP.z * 5/D) * D;
+                            if(d > D) d = D;
+                            cv::circle(draw, pp, 1,
+                                    cv::Scalar(0, D-d, d), -1, 8, 0);
+                        }
+                    }
+                    for(int k=0; k<keypoints[cam][frame].size(); k++) {
+                        auto p = keypoints_p[cam][frame][k];
+                        int hd = has_depth[cam][frame][k];
+                        if(hd != -1) {
+                            int D = 255;
+                            double d = sqrt(
+                                    kp_with_depth[cam][frame]->at(hd).z * 5/D) * D;
+                            if(d > D) d = D;
+                            cv::circle(draw, p, 4, cv::Scalar(0, 255-d, d), -1, 8, 0);
+                            cv::circle(draw, p, 4, cv::Scalar(0, 0, 0), 1, 8, 0);
+                        } else {
+                            cv::circle(draw, p, 4, cv::Scalar(255, 200, 0), -1, 8, 0);
+                            cv::circle(draw, p, 4, cv::Scalar(0, 0, 0), 1, 8, 0);
+                        }
+                    }
+                    imshow(depthassoc, draw);
+                }
+#endif
             }
         }
         std::cerr << "Feature tracking done" << std::endl;
 
         for(int ba = 0; ba < 2; ba++) {
-        for(int dframe : dframes[ba]) {
-            if(frame-dframe < 0) break;
-            // matches are what's fed into frameToFrame,
-            // good matches have outliers removed during optimization
-            Eigen::Matrix4d dT;
-            if(dframe == 1) {
-                if(frame > 1) {
-                    //Eigen::Matrix4d T1 = cam_nodes[0][frame-2]->value().wTo();
-                    //Eigen::Matrix4d T2 = cam_nodes[0][frame-1]->value().wTo();
-                    auto T1 = ceres_poses_mat[frame-2];
-                    auto T2 = ceres_poses_mat[frame-1];
+            for(int dframe : dframes[ba]) {
+                if(frame-dframe < 0) break;
+                // matches are what's fed into frameToFrame,
+                // good matches have outliers removed during optimization
+                Eigen::Matrix4d dT;
+                if(dframe == 1) {
+                    if(frame > 1) {
+                        //Eigen::Matrix4d T1 = cam_nodes[0][frame-2]->value().wTo();
+                        //Eigen::Matrix4d T2 = cam_nodes[0][frame-1]->value().wTo();
+                        auto T1 = ceres_poses_mat[frame-2];
+                        auto T2 = ceres_poses_mat[frame-1];
+                        dT = T2 * T1.inverse();
+                    } else {
+                        dT = util::pose_mat2vec(transform);
+                    }
+                } else {
+                    //Eigen::Matrix4d T1 = cam_nodes[0][frame-dframe]->value().wTo();
+                    //Eigen::Matrix4d T2 = cam_nodes[0][frame]->value().wTo();
+                    auto T1 = ceres_poses_mat[frame-dframe];
+                    auto T2 = ceres_poses_mat[frame];
                     dT = T2 * T1.inverse();
-                } else {
-                    dT = util::pose_mat2vec(transform);
                 }
-            } else {
-                //Eigen::Matrix4d T1 = cam_nodes[0][frame-dframe]->value().wTo();
-                //Eigen::Matrix4d T2 = cam_nodes[0][frame]->value().wTo();
-                auto T1 = ceres_poses_mat[frame-dframe];
-                auto T2 = ceres_poses_mat[frame];
-                dT = T2 * T1.inverse();
-            }
-            util::pose_vec2mat(dT, transform);
-            std::vector<std::vector<std::pair<int, int>>> matches(num_cams);
-            std::vector<std::vector<std::pair<int, int>>> good_matches(num_cams);
-            std::vector<std::vector<ResidualType>> residual_type(num_cams);
+                if(ba == 1) {
+                    dT(1,3) /= 20;
+                }
+                util::pose_vec2mat(dT, transform);
+                std::vector<std::vector<std::pair<int, int>>> matches(num_cams);
+                std::vector<std::vector<std::pair<int, int>>> good_matches(num_cams);
+                std::vector<std::vector<ResidualType>> residual_type(num_cams);
 
-            // if attempting loop closure,
-            // check if things are close by
-            if(ba == 1) {
-                Eigen::Vector3d le_dist; le_dist << transform[3], transform[4], transform[5];
-                if(le_dist.norm() > loop_close_thresh) {
+                // if attempting loop closure,
+                // check if things are close by
+                if(ba == 1) {
+                    Eigen::Vector3d le_dist; le_dist << transform[3], transform[4], transform[5];
+                    if(le_dist.norm() > loop_close_thresh) {
+                        continue;
+                    } else {
+                        std::cerr << "Loop closure plausible" << std::endl;
+                    }
+                }
+                std::cerr << "Computing f2f pose: "
+                    << " " << frame-dframe << "-" << frame
+                    << " ba=" << ba << std::endl;
+                sd = lru.get(dataset, frame);
+                ScanData *sd_prev = lru.get(dataset, frame - dframe);
+                if(ba == 0) {
+                    matchUsingId(keypoint_ids, frame, frame-dframe, matches);
+                    std::cerr << "Matches using id: ";
+                    for(int zxcv=0; zxcv<num_cams; zxcv++) {
+                        std::cerr << matches[zxcv].size() << " ";
+                    }
+                    std::cerr << std::endl;
+                } else {
+                    matchFeatures(descriptors, frame, frame-dframe, matches);
+                    std::cerr << "Matches using descriptors: ";
+                    for(int zxcv=0; zxcv<num_cams; zxcv++) {
+                        std::cerr << matches[zxcv].size() << " ";
+                    }
+                    std::cerr << std::endl;
+                }
+                if(dframe > 1 && matches[0].size() < min_matches) break;
+                bool enable_icp = ba;
+                if(matches[0].size() < 100) {
+                    if(ba == 0 && dframe != 1) break;
+                    enable_icp = true;
+                }
+                std::cerr << "Predicted: ";
+                for(int i=0; i<6; i++) std::cerr << transform[i] << " ";
+                std::cerr << std::endl;
+
+                std::map<int, pcl::PointXYZ> landmarks_at_frame;
+                // get triangulated landmarks
+                std::cerr << "Getting triangulated landmarks at frame "
+                    << frame-dframe << std::endl;
+                getLandmarksAtFrame(
+                        ceres_poses_mat[frame-dframe],
+                        landmarks,
+                        keypoint_added,
+                        keypoint_ids,
+                        frame-dframe,
+                        landmarks_at_frame);
+                auto start = clock() / double(CLOCKS_PER_SEC);
+                Eigen::Matrix4d dpose = frameToFrame(
+                        matches,
+                        keypoints,
+                        keypoint_ids,
+                        landmarks_at_frame,
+                        kp_with_depth,
+                        has_depth,
+                        sd->scans,
+                        sd_prev->scans,
+                        sd_prev->trees,
+                        frame,
+                        frame-dframe,
+                        transform,
+                        good_matches,
+                        residual_type,
+                        ba);
+                        //enable_icp);
+                auto end = clock() / double(CLOCKS_PER_SEC);
+                if(dframe == 1) {
+                    ceres_poses_mat[frame] = ceres_poses_mat[frame-1] * dpose;
+                    util::pose_vec2mat(ceres_poses_mat[frame], ceres_poses_vec[frame]);
+                }
+                std::cerr << "Optimized (t=" << end - start << "): ";
+                for(int i=0; i<6; i++) std::cerr << transform[i] << " ";
+                std::cerr << std::endl;
+
+                // check agreement
+                double agreement[6];
+                util::pose_vec2mat(dpose * dT.inverse(), agreement);
+                std::cerr << "Agreement: ";
+                for(int i=0; i<6; i++) std::cerr << agreement[i] << " ";
+                std::cerr << std::endl;
+                Eigen::Vector3d agreement_t;
+                agreement_t << agreement[3], agreement[4], agreement[5];
+                Eigen::Vector3d agreement_r;
+                agreement_r << agreement[0], agreement[1], agreement[2];
+
+                if(ba == 0 && agreement_t.norm() >
+                        std::min(agreement_t_thresh * dframe, loop_close_thresh)
+                        && dframe > 1) {
+                    std::cerr << "Poor t agreement: " << agreement_t.norm()
+                        << " " << agreement_t_thresh << " " << dframe
+                        << std::endl;
                     continue;
-                } else {
-                    std::cerr << "Loop closure plausible" << std::endl;
                 }
-            }
-            std::cerr << "Computing f2f pose: " << 
-                " " << frame-dframe << "-" << frame << std::endl;
-            sd = lru.get(dataset, frame);
-            ScanData *sd_prev = lru.get(dataset, frame - dframe);
-            matchUsingId(keypoint_ids, frame, frame-dframe, matches);
-            std::cerr << "Matches using id: " << matches[0].size() << std::endl;
-            if(dframe > 1 && matches[0].size() < min_matches) break;
-            bool enable_icp = ba;
-            if(matches[0].size() < 100) enable_icp = true;
-            std::cerr << "Predicted: ";
-            for(int i=0; i<6; i++) std::cerr << transform[i] << " ";
-            std::cerr << std::endl;
-
-            std::map<int, pcl::PointXYZ> landmarks_at_frame;
-            // get triangulated landmarks
-            getLandmarksAtFrame(
-                    ceres_poses_mat[frame-dframe],
-                    landmarks,
-                    keypoint_added,
-                    keypoint_ids,
-                    frame-dframe,
-                    landmarks_at_frame);
-            auto start = clock() / double(CLOCKS_PER_SEC);
-            Eigen::Matrix4d dpose = frameToFrame(
-                    matches,
-                    keypoints,
-                    keypoint_ids,
-                    landmarks_at_frame,
-                    kp_with_depth,
-                    has_depth,
-                    sd->scans,
-                    sd_prev->scans,
-                    sd_prev->trees,
-                    frame,
-                    frame-dframe,
-                    transform,
-                    good_matches,
-                    residual_type,
-                    enable_icp);
-            auto end = clock() / double(CLOCKS_PER_SEC);
-            if(dframe == 1) {
-                ceres_poses_mat[frame] = dpose * ceres_poses_mat[frame-1];
-                util::pose_vec2mat(ceres_poses_mat[frame], ceres_poses_vec[frame]);
-            }
-            std::cerr << "Optimized (t=" << end - start << "): ";
-            for(int i=0; i<6; i++) std::cerr << transform[i] << " ";
-            std::cerr << std::endl;
-
-            // check agreement
-            double agreement[6];
-            util::pose_vec2mat(dpose * dT.inverse(), agreement);
-            std::cerr << "Agreement: ";
-            for(int i=0; i<6; i++) std::cerr << agreement[i] << " ";
-            std::cerr << std::endl;
-            Eigen::Vector3d agreement_t;
-            agreement_t << agreement[3], agreement[4], agreement[5];
-            Eigen::Vector3d agreement_r;
-            agreement_r << agreement[0], agreement[1], agreement[2];
-
-            if(ba == 0 && agreement_t.norm() > agreement_t_thresh * dframe
-                    && dframe > 1) {
-                std::cerr << "Poor t agreement: " << agreement_t.norm()
-                    << " " << agreement_t_thresh * dframe << std::endl;
-                break;
-            }
-            if(agreement_r.norm() > agreement_r_thresh && dframe > 1) {
-                std::cerr << "Poor r agreement" << std::endl;
-                break;
-            }
+                if(agreement_r.norm() > agreement_r_thresh && dframe > 1) {
+                    std::cerr << "Poor r agreement" << std::endl;
+                    continue;
+                }
+                if(ba == 1) {
+                    std::cerr << "Loop closed!" << std::endl;
+                }
 
 #ifdef VISUALIZE
-            if(dframe == 1) {
-                std::vector<cv::Mat> draws(num_cams);
-                for(int cam=0; cam<num_cams; cam++) {
-                    cv::Mat draw;
-                    cvtColor(imgs[cam], draw, cv::COLOR_GRAY2BGR);
-                    auto &K = cam_intrinsic[cam];
-                    //cv::drawKeypoints(img, keypoints[frame], draw);
-                    for(int k=0; k<keypoints[cam][frame].size(); k++) {
-                        auto p = keypoints_p[cam][frame][k];
-                        if(has_depth[cam][frame][k] != -1) {
-                            cv::circle(draw, p, 2, cv::Scalar(0, 0, 255), -1, 8, 0);
-                        } else {
-                            cv::circle(draw, p, 2, cv::Scalar(255, 200, 0), -1, 8, 0);
+                if(dframe == 1) {
+                    std::vector<cv::Mat> draws(num_cams);
+                    for(int cam=0; cam<num_cams; cam++) {
+                        cv::Mat draw;
+                        cvtColor(imgs[cam], draw, cv::COLOR_GRAY2BGR);
+                        auto &K = cam_intrinsic[cam];
+                        //cv::drawKeypoints(img, keypoints[frame], draw);
+                        for(int k=0; k<keypoints[cam][frame].size(); k++) {
+                            auto p = keypoints_p[cam][frame][k];
+                            if(has_depth[cam][frame][k] != -1) {
+                                cv::circle(draw, p, 4, cv::Scalar(0, 0, 100), -1, 8, 0);
+                            } else {
+                                cv::circle(draw, p, 4, cv::Scalar(100, 0, 0), -1, 8, 0);
+                            }
                         }
-                    }
-                    /*
-                    for(int s=0, _s = projection.size(); s<_s; s++) {
-                        auto P = projection[s];
-                        for(auto p : P) {
-                            auto pp = canonical2pixel(p, K);
-                            cv::circle(draw, pp, 1,
-                                    cv::Scalar(0, 128, 0), -1, 8, 0);
+
+                        for(auto m : matches[cam]) {
+                            auto p1 = keypoints_p[cam][frame][m.first];
+                            auto p2 = keypoints_p[cam][frame-dframe][m.second];
+                            cv::arrowedLine(draw, p1, p2,
+                                    cv::Scalar(0, 0, 0), 1, CV_AA);
                         }
-                    }
-                    */
 
-                    for(auto m : matches[cam]) {
-                        auto p1 = keypoints_p[cam][frame][m.first];
-                        auto p2 = keypoints_p[cam][frame-dframe][m.second];
-                        cv::arrowedLine(draw, p1, p2,
-                                cv::Scalar(0, 0, 255), 1, CV_AA);
-                    }
-
-                    for(int i=0; i<good_matches[cam].size(); i++) {
-                        auto m = good_matches[cam][i];
-                        auto p1 = keypoints_p[cam][frame][m.first];
-                        auto p2 = keypoints_p[cam][frame-dframe][m.second];
-                        cv::Scalar color = cv::Scalar(0, 0, 0);
-                        switch(residual_type[cam][i]) {
-                            case RESIDUAL_3D3D:
-                                color = cv::Scalar(0, 0, 255);
-                                break;
-                            case RESIDUAL_3D2D:
-                            case RESIDUAL_2D3D:
-                                color = cv::Scalar(0, 250, 255);
-                                break;
-                            case RESIDUAL_2D2D:
-                                color = cv::Scalar(255, 200, 0);
-                                break;
+                        for(int i=0; i<good_matches[cam].size(); i++) {
+                            auto m = good_matches[cam][i];
+                            auto p1 = keypoints_p[cam][frame][m.first];
+                            auto p2 = keypoints_p[cam][frame-dframe][m.second];
+                            cv::Scalar color = cv::Scalar(0, 0, 0);
+                            switch(residual_type[cam][i]) {
+                                case RESIDUAL_3D3D:
+                                    color = cv::Scalar(0, 100, 255);
+                                    break;
+                                case RESIDUAL_3D2D:
+                                case RESIDUAL_2D3D:
+                                    color = cv::Scalar(0, 230, 255);
+                                    break;
+                                case RESIDUAL_2D2D:
+                                    color = cv::Scalar(255, 200, 0);
+                                    break;
+                            }
+                            cv::arrowedLine(draw, p1, p2,
+                                    color, 2, CV_AA);
                         }
-                        cv::arrowedLine(draw, p1, p2,
-                                color, 2, CV_AA);
-                    }
 
-                    // Draw stereo matches
-                    std::vector<std::pair<int, int>> intercamera_matches;
-                    matchUsingId(keypoint_ids, 0, 1, frame, frame,
-                            intercamera_matches);
-                    for(auto m : intercamera_matches) {
-                        auto p1 = keypoints_p[0][frame][m.first];
-                        auto p2 = keypoints_p[1][frame][m.second];
-                        cv::line(draw, p1, p2, cv::Scalar(255, 0, 255), 1, CV_AA);
+                        // Draw stereo matches
+                        std::vector<std::pair<int, int>> intercamera_matches;
+                        matchUsingId(keypoint_ids, 0, 1, frame, frame,
+                                intercamera_matches);
+                        for(auto m : intercamera_matches) {
+                            auto p1 = keypoints_p[0][frame][m.first];
+                            auto p2 = keypoints_p[1][frame][m.second];
+                            cv::line(draw, p1, p2, cv::Scalar(255, 0, 255), 1, CV_AA);
+                        }
+                        draw.copyTo(draws[cam]);
                     }
-                    draw.copyTo(draws[cam]);
+                    cv::Mat D;
+                    vconcat(draws[0], draws[1], D);
+                    cv::imshow(features, D);
+                    cvWaitKey(1);
                 }
-                cv::Mat D;
-                vconcat(draws[0], draws[1], D);
-                cv::imshow(video, D);
-                cvWaitKey(1);
-            }
 #endif
-            if(dframe == 1) {
-                removeSlightlyLessTerribleFeatures(
-                        keypoints,
-                        keypoints_p,
-                        kp_with_depth,
-                        keypoint_ids,
-                        descriptors,
-                        has_depth,
-                        frame,
-                        good_matches);
-            }
+                if(dframe == 1) {
+                    removeSlightlyLessTerribleFeatures(
+                            keypoints,
+                            keypoints_p,
+                            kp_with_depth,
+                            keypoint_ids,
+                            descriptors,
+                            has_depth,
+                            frame,
+                            good_matches);
+                }
 
 #ifdef ENABLE_ISAM
-            // iSAM time!
-            isam::Pose3d_Pose3d_Factor* odom_factor =
-                new isam::Pose3d_Pose3d_Factor(
-                    cam_nodes[0][frame-dframe],
-                    cam_nodes[0][frame],
-                    isam::Pose3d(dpose),
-                    noisy6
-                    );
-            slam.add_factor(odom_factor);
-            for(int cam = 1; cam<num_cams; cam++) {
-                isam::Pose3d_Pose3d_Factor* cam_factor =
+                // iSAM time!
+                isam::Pose3d_Pose3d_Factor* odom_factor =
                     new isam::Pose3d_Pose3d_Factor(
-                        cam_nodes[0][frame],
-                        cam_nodes[cam][frame],
-                        isam::Pose3d(cam_pose[cam].cast<double>()),
-                        noiseless6
-                        );
-                slam.add_factor(cam_factor);
-            }
-            //slam.batch_optimization();
+                            cam_nodes[0][frame-dframe],
+                            cam_nodes[0][frame],
+                            isam::Pose3d(dpose),
+                            noisy6
+                            );
+                slam.add_factor(odom_factor);
+                for(int cam = 1; cam<num_cams; cam++) {
+                    isam::Pose3d_Pose3d_Factor* cam_factor =
+                        new isam::Pose3d_Pose3d_Factor(
+                                cam_nodes[0][frame],
+                                cam_nodes[cam][frame],
+                                isam::Pose3d(cam_pose[cam].cast<double>()),
+                                noiseless6
+                                );
+                    slam.add_factor(cam_factor);
+                }
+                slam.update();
+#else
+                break;
 #endif
-        }
+            }
         }
 
         // Detect new features
@@ -520,10 +593,10 @@ int main(int argc, char** argv) {
             kp_with_depth[cam][frame].reset();
             kp_with_depth[cam][frame] = pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>);
             featureDepthAssociation(scans_valid,
-                projection,
-                keypoints[cam][frame],
-                kp_with_depth[cam][frame],
-                has_depth[cam][frame]);
+                    projection,
+                    keypoints[cam][frame],
+                    kp_with_depth[cam][frame],
+                    has_depth[cam][frame]);
             img_prevs[cam] = imgs[cam];
         }
 
@@ -546,13 +619,16 @@ int main(int argc, char** argv) {
                 int id = keypoint_ids[cam][frame][i];
                 keypoint_obs_count[id]++;
                 int koc = keypoint_obs_count[id];
+                if(koc >= keypoint_obs_count_hist.size()) {
+                    keypoint_obs_count_hist.resize(koc+1, 0);
+                }
                 keypoint_obs_count_hist[koc-1]--;
                 keypoint_obs_count_hist[koc]++;
                 /*
-                std::cerr << i << "," << has_depth[cam][frame][i] 
-                    << "/" << keypoints[cam][frame].size()
-                    << " " << std::endl;
-                    */
+                   std::cerr << i << "," << has_depth[cam][frame][i] 
+                   << "/" << keypoints[cam][frame].size()
+                   << " " << std::endl;
+                   */
                 if(has_depth[cam][frame][i] == -1) {
                     keypoint_obs2[id][cam][frame] = keypoints[cam][frame][i];
                 } else {
@@ -578,7 +654,7 @@ int main(int argc, char** argv) {
             }
         }
         for(auto id : ids_seen) {
-            if(keypoint_obs_count[id] <= 5) {
+            if(keypoint_obs_count[id] < 3) {
                 continue;
             }
             triangulatePoint(
@@ -590,13 +666,19 @@ int main(int argc, char** argv) {
             //std::cerr << "Triangulating " << id << ": " << landmarks->at(id) << std::endl;
             if(!keypoint_added[id]) {
 #ifdef ENABLE_ISAM
+#ifdef BUNDLE_ADJUST
                 slam.add_node(point_nodes[id]);
+#endif
 #endif
                 keypoint_added[id] = true;
             }
 #ifdef ENABLE_ISAM
+#ifdef BUNDLE_ADJUST
             for(int cam=0; cam<num_cams; cam++) {
                 for(auto obs3 : keypoint_obs3[id][cam]) {
+                    if(added_to_isam_3d[cam][obs3.first].count(id)) {
+                        continue;
+                    }
                     isam::Noise noise3 = isam::Information(1 * isam::eye(3));
                     auto p3 = obs3.second;
                     Eigen::Vector3d point3d = p3.getVector3fMap().cast<double>();
@@ -609,11 +691,14 @@ int main(int argc, char** argv) {
                                 noise3
                                 );
                     slam.add_factor(factor);
+                    added_to_isam_3d[cam][obs3.first][id] = factor;
                 }
-                keypoint_obs3[id][cam].clear();
             }
             for(int cam=0; cam<num_cams; cam++) {
                 for(auto obs2 : keypoint_obs2[id][cam]) {
+                    if(added_to_isam_2d[cam][obs2.first].count(id)) {
+                        continue;
+                    }
                     isam::MonocularMeasurement measurement(
                             obs2.second.x,
                             obs2.second.y
@@ -628,14 +713,21 @@ int main(int argc, char** argv) {
                                 noise2
                                 );
                     slam.add_factor(factor);
+                    added_to_isam_2d[cam][obs2.first][id] = factor;
                 }
-                keypoint_obs2[id][cam].clear();
             }
 #endif
+#endif
         }
+
 #ifdef ENABLE_ISAM
-        if(/*frame > 0 && frame % ba_every == 0 ||*/ frame == num_frames-1) {
-            slam.batch_optimization();
+        slam.update();
+        slam.print_stats();
+        if(frame > 0 && frame % ba_every == 0 || frame == num_frames-1) {
+            slam.update();
+            if(frame == num_frames-1) {
+                slam.batch_optimization();
+            }
 
             std::ofstream output;
             output.open(("results/" + std::string(argv[1]) + ".txt").c_str());
@@ -646,6 +738,17 @@ int main(int argc, char** argv) {
             }
             output.close();
         }
+        /*
+        slam.batch_optimization();
+        for(int id=0; id<=id_counter; id++) {
+            if(keypoint_added[id]) {
+                std::cerr << "Keypoint " << id << ": "
+                    << point_nodes[id]->value()
+                    << landmarks->at(id)
+                    << std::endl;
+            }
+        }
+        */
 #else
         std::ofstream output;
         output.open(("results/" + std::string(argv[1]) + ".txt").c_str());

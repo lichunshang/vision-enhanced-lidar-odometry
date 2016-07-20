@@ -5,17 +5,18 @@ const int num_cams = 2, // number of cameras we use
     lkt_window = 21,
     lkt_pyramid = 4,
     corner_count = 3000, // number of features
-    icp_skip = 100,
+    icp_skip = 200,
     f2f_iterations = 2,
     icp_iterations = 3,
     min_matches = 0, // minimum number of feature matches to proceed
     detect_every = 1, // detect new features every this number of frames
-    ba_every = 10; // bundle adjust every this number of frames
+    ba_every = 10, // bundle adjust every this number of frames
+    ndiagonal = 4;
 
 const double
     flow_outlier = 20000, // pixels^2, squared distance of optical flow
     quality_level = 0.001, // good features to track quality
-    min_distance = 7, // pixel distance between nearest features
+    min_distance = 12, // pixel distance between nearest features
     weight_3D2D = 10,
     weight_2D2D = 500,
     weight_3DPD = 1, // there are more of them
@@ -31,7 +32,7 @@ const double
     icp_norm_condition = 1e-5,
     agreement_t_thresh = 0.1, // meters
     agreement_r_thresh = 0.05, // radians
-    loop_close_thresh = 8; // meters
+    loop_close_thresh = 10; // meters
 
 int img_width = 1226, // kitti data
     img_height = 370;

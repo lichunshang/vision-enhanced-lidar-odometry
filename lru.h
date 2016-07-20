@@ -7,6 +7,7 @@
 struct ScanData {
     std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> scans;
     std::vector<pcl::KdTreeFLANN<pcl::PointXYZ>> trees;
+    int _frame;
     ScanData() {}
     ScanData(const std::string dataset, const int frame) {
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(
@@ -17,6 +18,7 @@ struct ScanData {
         for(int i=0; i<scans.size(); i++) {
             trees[i].setInputCloud(scans[i]);
         }
+        _frame = frame;
         /*
         std::cerr << "created scandata: " << dataset 
             << ", " << frame 
@@ -49,6 +51,7 @@ class ScansLRU {
             exists[frame] = times.begin();
             if(times.size() > size) {
                 auto sd = times.back();
+                exists.erase(sd->_frame);
                 delete sd;
                 times.pop_back();
             }

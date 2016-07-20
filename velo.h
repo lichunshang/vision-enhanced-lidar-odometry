@@ -498,21 +498,23 @@ std::vector<int> featureDepthAssociation(
 
 void matchFeatures(
         const std::vector<std::vector<cv::Mat>> &descriptors,
-        const int frame1,
-        const int frame2,
         const int cam1,
         const int cam2,
+        const int frame1,
+        const int frame2,
         std::vector<std::pair<int, int>> &matches
         ) {
-    //cv::BFMatcher matcher(cv::NORM_HAMMING);
-    //double start = clock()/double(CLOCKS_PER_SEC);
-    //std::cerr << "Matching: ";
-    std::vector<cv::DMatch> mc;
+    double start = clock()/double(CLOCKS_PER_SEC);
     /*
-    matcher.match(
-            descriptors[cam1][frame1],
-            descriptors[cam2][frame2], mc);
-            */
+    std::cerr << "Matching: ";
+    std::cerr << descriptors[cam1].size()
+        << ", " << descriptors[cam2].size()
+        << ", " << frame1 << " " << frame2 << "; ";
+    std::cerr << descriptors[cam1][frame1].size()
+        << ", " << descriptors[cam2][frame2].size();
+        */
+    std::vector<cv::DMatch> mc;
+#ifdef USE_CUDA
     cv::Ptr<cv::cuda::DescriptorMatcher> d_matcher =
         cv::cuda::DescriptorMatcher::createBFMatcher(cv::NORM_HAMMING);
     cv::cuda::GpuMat d_query(descriptors[cam1][frame1]);
@@ -521,23 +523,39 @@ void matchFeatures(
     d_matcher->matchAsync(d_query, d_train, d_matches);
 
     d_matcher->matchConvert(d_matches, mc);
+#else
+    cv::BFMatcher matcher(cv::NORM_HAMMING);
+    matcher.match(
+            descriptors[cam1][frame1],
+            descriptors[cam2][frame2], mc);
+#endif
 
-    //double end = clock()/double(CLOCKS_PER_SEC);
-    //std::cerr << descriptors[cam1][frame1].size()
-        //<< ", " << descriptors[cam2][frame2].size()
-        //<< "; " << end-start << std::endl;
+    double end = clock()/double(CLOCKS_PER_SEC);
+    //std::cerr << "; " << end-start << std::endl;
     // find minimum matching distance and filter out the ones more than twice as big as it
     double min_dist = 1e9, max_dist = 0;
     for(int i=0; i<mc.size(); i++) {
         if(mc[i].distance < min_dist) min_dist = mc[i].distance;
         if(mc[i].distance > max_dist) max_dist = mc[i].distance;
     }
-    //std::cerr << "Matches cam " << cam << ": " <<  mc.size()
-        //<< " " << min_dist << " " << max_dist
-        //<< std::endl;
+    /*
+    std::cerr << "Matches cam " << cam1 << ": " <<  mc.size()
+        << " " << min_dist << " " << max_dist
+        << std::endl;
+        */
     for(int i=0; i<mc.size(); i++) {
         if(mc[i].distance > std::max(1.5*min_dist, match_thresh)) continue;
         matches.push_back(std::make_pair(mc[i].queryIdx, mc[i].trainIdx));
+    }
+}
+void matchFeatures(
+        const std::vector<std::vector<cv::Mat>> &descriptors,
+        const int frame1,
+        const int frame2,
+        std::vector<std::vector<std::pair<int, int>>> &matches
+        ) {
+    for(int cam=0; cam<num_cams; cam++) {
+        matchFeatures(descriptors, cam, cam, frame1, frame2, matches[cam]);
     }
 }
 
@@ -602,7 +620,7 @@ Eigen::Matrix4d frameToFrame(
 
         // Visual odometry
         for(int cam = 0; cam<num_cams; cam++) {
-            std::cerr << "Matches: " << matches[cam].size() << std::endl;
+            //std::cerr << "Matches: " << matches[cam].size() << std::endl;
             good_matches[cam].clear();
             residual_type[cam].clear();
             const std::vector<std::pair<int, int>> &mc = matches[cam];
@@ -614,9 +632,16 @@ Eigen::Matrix4d frameToFrame(
                      d2 = has_depth[cam][frame2][point2] != -1;
                 pcl::PointXYZ point3_2, point3_1;
                 if(landmarks_at_frame.count(id)) {
-                    d2 = true;
                     point3_2 = landmarks_at_frame.at(id);
-                    //std::cerr << "Using landmark: " << point3_2 << std::endl;
+                    /*
+                    if(d2) {
+                        std::cerr << "Using landmark "
+                            << id << ": " << point3_2 
+                            << " " << keypoints_with_depth[cam][frame2]
+                            ->at(has_depth[cam][frame2][point2]) << std::endl;
+                    }
+                    */
+                    d2 = true;
                 } else if(d2) {
                     point3_2 = keypoints_with_depth[cam][frame2]
                         ->at(has_depth[cam][frame2][point2]);
@@ -770,7 +795,7 @@ Eigen::Matrix4d frameToFrame(
 #ifdef ENABLE_ICP
         std::vector<ceres::ResidualBlockId> icp_blocks;
 
-        std::cerr << "M: " << scans_M.size() << " S: " << scans_S.size() << kd_trees.size() << std::endl;
+        //std::cerr << "M: " << scans_M.size() << " S: " << scans_S.size() << kd_trees.size() << std::endl;
 
         for(int icp_iter = 0; icp_iter < icp_iterations; icp_iter++) {
             while(icp_blocks.size() > 0) {
@@ -881,6 +906,7 @@ Eigen::Matrix4d frameToFrame(
 #ifdef ENABLE_ICP
         }
 #endif
+        residualStats(problem, good_matches, residual_type);
     }
 
     /*
@@ -1028,14 +1054,17 @@ void triangulatePoint(
     for(int cam=0; cam<num_cams; cam++) {
         for(auto obs3 : keypoint_obs3[cam]) {
             /*
-            std::cerr << "3D observation " <<  obs3.second << ": ";
+            std::cerr << "3D observation " <<  obs3.second
+                << " at " << obs3.first << ": ";
             for(int i=0; i<6; i++) {
                 std::cerr << camera_poses[obs3.first][i] << " ";
             }
             std::cerr << std::endl;
+            std::cerr << util::pose_mat2vec(camera_poses[obs3.first]);
+            std::cerr << std::endl;
             */
             ceres::CostFunction* cost_function =
-                new ceres::AutoDiffCostFunction<triangulation3D, 3, 6>(
+                new ceres::AutoDiffCostFunction<triangulation3D, 3, 3>(
                         new triangulation3D(
                             obs3.second.x,
                             obs3.second.y,
@@ -1050,7 +1079,8 @@ void triangulatePoint(
                         );
             problem.AddResidualBlock(
                     cost_function,
-                    new ceres::CauchyLoss(loss_thresh_3D3D),
+                    new ceres::TrivialLoss,
+                    //new ceres::CauchyLoss(loss_thresh_3D3D),
                     transform);
             if(!initialized) {
                 initialized = 3;
@@ -1069,7 +1099,7 @@ void triangulatePoint(
             std::cerr << std::endl;
             */
             ceres::CostFunction* cost_function =
-                new ceres::AutoDiffCostFunction<triangulation2D, 2, 6>(
+                new ceres::AutoDiffCostFunction<triangulation2D, 2, 3>(
                         new triangulation2D(
                             obs2.second.x,
                             obs2.second.y,
@@ -1111,13 +1141,20 @@ void getLandmarksAtFrame(
         for(int id : keypoint_ids[cam][frame]) {
             if(landmarks_at_frame.count(id)) continue;
             if(!keypoint_added[id]) continue;
-            Eigen::Vector4d p = poseinv 
-                * landmarks->at(id).getVector4fMap().cast<double>();
+            auto point = landmarks->at(id);
+            Eigen::Vector4d q;
+            q << point.x, point.y, point.z, 1;
+            Eigen::Vector4d p = poseinv * q;
             pcl::PointXYZ pp;
             pp.x = p(0)/p(3);
             pp.y = p(1)/p(3);
             pp.z = p(2)/p(3);
             landmarks_at_frame[id] = pp;
+            /*
+            std::cerr << "Getting landmark " << id << ": "
+                << pp << std::endl;
+            std::cerr << pose << std::endl;
+            */
         }
     }
 }
